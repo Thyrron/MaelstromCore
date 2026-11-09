@@ -19,8 +19,78 @@
 #include "DatabaseEnv.h"
 #include "GridDefines.h"
 #include "Log.h"
+#include "MoveSplineInitArgs.h"
 #include "QueryResult.h"
 #include "Timer.h"
+#include <algorithm>
+
+namespace
+{
+    // Smooth waypoint movement launches the nodes of a path up to the next node with a delay as one catmullrom spline,
+    // and waypoint_data_addon spline points are launched as one spline to their node; MoveSplineInitArgs::
+    // _checkPathLengths rejects either when two consecutive points are closer than Movement::MIN_SPLINE_SEGMENT_LENGTH.
+    // Such data is merged here, at load, so a stored path cannot produce that spline. A node with a delay ends its
+    // spline, so a node repeated after it ("stop, then turn and wait") is valid and kept; so are paths without smooth
+    // nodes, which move point to point.
+    void MergeDuplicateNodes(WaypointPath& path)
+    {
+        if (std::none_of(path.Nodes.begin(), path.Nodes.end(), [](WaypointNode const& node) { return node.SmoothTransition; }))
+            return;
+
+        std::vector<WaypointNode> nodes;
+        nodes.reserve(path.Nodes.size());
+        for (WaypointNode& node : path.Nodes)
+        {
+            if (!nodes.empty())
+            {
+                WaypointNode& kept = nodes.back();
+                if (!kept.Delay && (G3D::Vector3(node.X, node.Y, node.Z) - G3D::Vector3(kept.X, kept.Y, kept.Z)).length() < Movement::MIN_SPLINE_SEGMENT_LENGTH)
+                {
+                    LOG_ERROR("sql.sql", "Waypoint path {}: point {} is closer than {} yd to point {} and was merged into it. Remove it from `waypoint_data`.",
+                        path.Id, node.Id, Movement::MIN_SPLINE_SEGMENT_LENGTH, kept.Id);
+                    // the kept node has no delay, so the merged one takes over what happens at this spot
+                    kept.Delay = node.Delay;
+                    if (node.Orientation)
+                        kept.Orientation = node.Orientation;
+                    if (node.EventId)
+                    {
+                        if (kept.EventId)
+                            LOG_ERROR("sql.sql", "Waypoint path {}: script {} of merged point {} replaces script {} of point {}.",
+                                path.Id, node.EventId, node.Id, kept.EventId, kept.Id);
+                        kept.EventId = node.EventId;
+                        kept.EventChance = node.EventChance;
+                    }
+                    continue;
+                }
+            }
+
+            nodes.push_back(std::move(node));
+        }
+
+        path.Nodes = std::move(nodes);
+    }
+
+    void RemoveDuplicateSplinePoints(uint32 pathId, WaypointNode& node)
+    {
+        std::vector<G3D::Vector3> points;
+        points.reserve(node.SplinePoints.size());
+        for (G3D::Vector3 const& point : node.SplinePoints)
+            if (points.empty() || (point - points.back()).length() >= Movement::MIN_SPLINE_SEGMENT_LENGTH)
+                points.push_back(point);
+
+        // the spline ends on the node itself
+        G3D::Vector3 const destination(node.X, node.Y, node.Z);
+        while (!points.empty() && (destination - points.back()).length() < Movement::MIN_SPLINE_SEGMENT_LENGTH)
+            points.pop_back();
+
+        if (points.size() == node.SplinePoints.size())
+            return;
+
+        LOG_ERROR("sql.sql", "Waypoint path {} point {}: removed {} spline point(s) closer than {} yd to the previous point or to the waypoint. Remove them from `waypoint_data_addon`.",
+            pathId, node.Id, node.SplinePoints.size() - points.size(), Movement::MIN_SPLINE_SEGMENT_LENGTH);
+        node.SplinePoints = std::move(points);
+    }
+}
 
 WaypointMgr* WaypointMgr::instance()
 {
@@ -87,6 +157,9 @@ void WaypointMgr::Load()
         ++count;
     } while (result->NextRow());
 
+    for (auto& [pathId, path] : _waypointStore)
+        MergeDuplicateNodes(path);
+
     LOG_INFO("server.loading", ">> Loaded {} waypoints in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     LOG_INFO("server.loading", " ");
 }
@@ -144,6 +217,11 @@ void WaypointMgr::LoadWaypointAddons()
 
         ++count;
     } while (result->NextRow());
+
+    for (auto& [pathId, path] : _waypointStore)
+        for (WaypointNode& node : path.Nodes)
+            if (!node.SplinePoints.empty())
+                RemoveDuplicateSplinePoints(pathId, node);
 
     LOG_INFO("server.loading", ">> Loaded {} waypoint addon data in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
     LOG_INFO("server.loading", " ");
@@ -204,5 +282,6 @@ void WaypointMgr::ReloadPath(uint32 id)
         values.push_back(std::move(waypoint));
     } while (result->NextRow());
 
-    _waypointStore[id] = WaypointPath(id, std::move(values));
+    WaypointPath& path = _waypointStore[id] = WaypointPath(id, std::move(values));
+    MergeDuplicateNodes(path);
 }

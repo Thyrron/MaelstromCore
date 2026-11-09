@@ -27,6 +27,9 @@ namespace Movement
 {
     typedef std::vector<Vector3> PointsArray;
 
+    // Shortest segment allowed between two consecutive points of a multi-point spline (see _checkPathLengths)
+    constexpr float MIN_SPLINE_SEGMENT_LENGTH = 0.1f;
+
     union FacingInfo
     {
         struct

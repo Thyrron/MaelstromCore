@@ -91,6 +91,7 @@ private:
     PathSource _pathSource;
     bool _smoothSplineLaunched;
     int32 _lastPassedSplineIdx;
+    bool _multiPointPathFailed; // a multi-point spline of this path failed validation: move point to point instead
 };
 
 /** FlightPathMovementGenerator generates movement of the player for the paths

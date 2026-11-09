@@ -309,6 +309,57 @@ def main() -> int:
     if low_level_stats:
         problems.append(f"{low_level_stats} low-level class stats have 1 HP or zero damage")
 
+    # Waypoint geometry. A smooth (catmullrom) waypoint spline runs through a path's nodes up to the next node with
+    # a delay; waypoint_data_addon points form one spline to their node. MoveSplineInitArgs::_checkPathLengths
+    # rejects such a spline when two consecutive points are closer than Movement::MIN_SPLINE_SEGMENT_LENGTH, and the
+    # creature never moves. The world server merges these at load and logs them; the built world must not have them.
+    min_segment = 0.1
+    dist = ("SQRT(POW({a}.position_x-{b}.position_x,2)+POW({a}.position_y-{b}.position_y,2)"
+            "+POW({a}.position_z-{b}.position_z,2))")
+    smooth_duplicates = scalar(
+        args.container, args.user, args.password, args.clean,
+        "SELECT COUNT(*) FROM waypoint_data a JOIN waypoint_data b ON b.id=a.id AND b.point=("
+        "SELECT MIN(n.point) FROM waypoint_data n WHERE n.id=a.id AND n.point>a.point) "
+        "WHERE a.delay=0 AND a.id IN (SELECT id FROM waypoint_data WHERE smoothTransition=1) "
+        f"AND {dist.format(a='a', b='b')}<{min_segment}")
+    report["waypoint_smooth_duplicate_points"] = smooth_duplicates
+    if smooth_duplicates:
+        problems.append(f"{smooth_duplicates} waypoint_data points repeat the previous point inside a smooth path")
+
+    # A repeating path is closed by the movement generator itself; a last node on top of the first breaks the spline.
+    closed_loops = scalar(
+        args.container, args.user, args.password, args.clean,
+        "SELECT COUNT(*) FROM (SELECT id, MIN(point) mn, MAX(point) mx FROM waypoint_data GROUP BY id "
+        "HAVING COUNT(*)>2) m JOIN waypoint_data f ON f.id=m.id AND f.point=m.mn "
+        "JOIN waypoint_data l ON l.id=m.id AND l.point=m.mx "
+        "WHERE l.delay=0 AND m.id IN (SELECT id FROM waypoint_data WHERE smoothTransition=1) "
+        "AND m.id IN (SELECT ca.path_id FROM creature_addon ca JOIN creature c ON c.guid=ca.guid "
+        "WHERE c.MovementType=2 UNION SELECT cta.path_id FROM creature_template_addon cta "
+        "JOIN creature c ON c.id=cta.entry WHERE c.MovementType=2) "
+        f"AND {dist.format(a='f', b='l')}<{min_segment}")
+    report["waypoint_closed_repeating_loops"] = closed_loops
+    if closed_loops:
+        problems.append(f"{closed_loops} repeating smooth waypoint paths end on their first point")
+
+    addon_dist = ("SQRT(POW(a.PositionX-b.PositionX,2)+POW(a.PositionY-b.PositionY,2)"
+                  "+POW(a.PositionZ-b.PositionZ,2))")
+    addon_duplicates = scalar(
+        args.container, args.user, args.password, args.clean,
+        "SELECT COUNT(*) FROM waypoint_data_addon a JOIN waypoint_data_addon b ON b.PathID=a.PathID "
+        "AND b.PointID=a.PointID AND b.SplinePointIndex=a.SplinePointIndex+1 "
+        f"WHERE {addon_dist}<{min_segment}")
+    addon_on_node = scalar(
+        args.container, args.user, args.password, args.clean,
+        "SELECT COUNT(*) FROM waypoint_data_addon a JOIN (SELECT PathID, PointID, MAX(SplinePointIndex) mx "
+        "FROM waypoint_data_addon GROUP BY PathID, PointID) m ON m.PathID=a.PathID AND m.PointID=a.PointID "
+        "AND a.SplinePointIndex=m.mx JOIN waypoint_data w ON w.id=a.PathID AND w.point=a.PointID "
+        "WHERE SQRT(POW(a.PositionX-w.position_x,2)+POW(a.PositionY-w.position_y,2)"
+        f"+POW(a.PositionZ-w.position_z,2))<{min_segment}")
+    report["waypoint_addon_duplicate_points"] = addon_duplicates + addon_on_node
+    if addon_duplicates + addon_on_node:
+        problems.append(f"{addon_duplicates + addon_on_node} waypoint_data_addon spline points repeat "
+                        "the previous point or their waypoint")
+
     print(json.dumps(report, indent=2, sort_keys=True))
     if problems:
         print("clean world FAIL", file=sys.stderr)

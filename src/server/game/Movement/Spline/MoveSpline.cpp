@@ -235,13 +235,13 @@ namespace Movement
 
         if (path.size() > 2)
         {
-            if ((path[2] - path[1]).length() < 0.1f)
+            if ((path[2] - path[1]).length() < MIN_SPLINE_SEGMENT_LENGTH)
                 return false;
 
             Vector3 middle = (path.front() + path.back()) / 2;
             for (uint32 i = 1; i < path.size() - 1; ++i)
             {
-                if ((path[i + 1] - path[i]).length() < 0.1f)
+                if ((path[i + 1] - path[i]).length() < MIN_SPLINE_SEGMENT_LENGTH)
                     return false;
 
                 // when compression is enabled, each point coord is packed into 11 bits (10 for Z)

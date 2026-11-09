@@ -35,14 +35,14 @@ inline G3D::Vector3 PositionToVector3(Position const& p) { return { p.GetPositio
 WaypointMovementGenerator<Creature>::WaypointMovementGenerator(uint32 pathId, bool repeating, PathSource pathSource) : PathMovementBase((WaypointPath const*)nullptr),
     _lastSplineId(0), _pathId(pathId), _waypointDelay(0),
     _waypointReached(true), _recalculateSpeed(false), _repeating(repeating), _loadedFromDB(true), _stalled(false), _hasBeenStalled(false), _done(false), _pathSource(pathSource),
-    _smoothSplineLaunched(false), _lastPassedSplineIdx(0)
+    _smoothSplineLaunched(false), _lastPassedSplineIdx(0), _multiPointPathFailed(false)
 {
 }
 
 WaypointMovementGenerator<Creature>::WaypointMovementGenerator(WaypointPath& path, bool repeating) : PathMovementBase((WaypointPath const*)nullptr),
     _lastSplineId(0), _pathId(0), _waypointDelay(0),
     _waypointReached(true), _recalculateSpeed(false), _repeating(repeating), _loadedFromDB(false), _stalled(false), _hasBeenStalled(false), _done(false), _pathSource(PathSource::WAYPOINT_MGR),
-    _smoothSplineLaunched(false), _lastPassedSplineIdx(0)
+    _smoothSplineLaunched(false), _lastPassedSplineIdx(0), _multiPointPathFailed(false)
 {
     i_path = &path;
 }
@@ -231,7 +231,7 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
     if (useTransportPath)
         init.DisableTransportPathTransformations();
 
-    if (waypoint.SmoothTransition && i_path->Nodes.size() > 2)
+    if (!_multiPointPathFailed && waypoint.SmoothTransition && i_path->Nodes.size() > 2)
     {
         // Build a catmullrom spline segment, stopping at delay waypoints
         init.Path().push_back(PositionToVector3(creature->GetPosition()));
@@ -294,7 +294,7 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
             init.MoveTo(G3D::Vector3(waypoint.X, waypoint.Y, waypoint.Z));
         }
     }
-    else if (!waypoint.SplinePoints.empty())
+    else if (!_multiPointPathFailed && !waypoint.SplinePoints.empty())
     {
         // We have spline points in waypoint_data_addon table
         int32 splineIndex = 0;
@@ -355,7 +355,19 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
     if (waypoint.Velocity > 0.f)
         init.SetVelocity(waypoint.Velocity);
 
-    init.Launch();
+    // A multi-point spline that fails validation (e.g. two consecutive points too close) never starts, and launching
+    // it again on the next update fails the same way, leaving the creature standing. Report the path once and walk it
+    // point to point from here on.
+    if (!init.Launch() && init.Path().size() > 2 && !_multiPointPathFailed)
+    {
+        LOG_ERROR("sql.sql", "Waypoint path {} of {} gives an invalid spline from point {}; moving point to point instead. "
+            "Check the path for consecutive points closer than {} yd.", i_path->Id, creature->GetGUID().ToString(),
+            waypoint.Id, Movement::MIN_SPLINE_SEGMENT_LENGTH);
+        _multiPointPathFailed = true;
+        _smoothSplineLaunched = false;
+        StartMove(creature, relaunch);
+        return;
+    }
 
     if (!creature->movespline->Finalized())
         _lastSplineId = creature->movespline->GetId();
