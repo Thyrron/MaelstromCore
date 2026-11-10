@@ -230,10 +230,14 @@ void Doodad::ExtractSet(WMODoodadData const& doodadData, ADT::MODF const& wmo, u
 
         G3D::Vector3 position = wmoPosition + (wmoRotation * G3D::Vector3(doodad.Position.x, doodad.Position.y, doodad.Position.z));
 
+        // The doodad turns inside the WMO, then with it (as its position above): wmoRotation * doodad.
+        // The server rebuilds the angles with fromEulerAnglesZYX(y, x, z) (ModelInstance), so they are taken
+        // apart in that order. Quat * wmoRotation taken apart as XYZ matched it only for turns about the
+        // vertical axis; tilted doodads inside WMOs (the wall gears in Tinker Town) stood skewed.
         Vec3D rotation;
-        (G3D::Quat(doodad.Rotation.X, doodad.Rotation.Y, doodad.Rotation.Z, doodad.Rotation.W)
-            .toRotationMatrix() * wmoRotation)
-            .toEulerAnglesXYZ(rotation.z, rotation.x, rotation.y);
+        (wmoRotation * G3D::Quat(doodad.Rotation.X, doodad.Rotation.Y, doodad.Rotation.Z, doodad.Rotation.W)
+            .toRotationMatrix())
+            .toEulerAnglesZYX(rotation.y, rotation.x, rotation.z);
 
         rotation.z = G3D::toDegrees(rotation.z);
         rotation.x = G3D::toDegrees(rotation.x);
