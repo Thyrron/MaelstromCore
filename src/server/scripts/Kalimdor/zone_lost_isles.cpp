@@ -64,6 +64,9 @@
 namespace LostIsles
 {
 
+// A quest giver's gossip option that hands back a lost quest item or vehicle (defined with its table below)
+bool HandleLostIslesGossipSpell(Player* player, uint32 menu, uint32 option);
+
 enum LostIslesQuests
 {
     QUEST_GOBLIN_ESCAPE_PODS_F      = 14001,
@@ -143,6 +146,7 @@ enum LostIslesCreatures
     NPC_THRALL_CAMP                 = 36188,
     NPC_FOREMAN_DAMPWICK_CAMP       = 36470,
     NPC_GEARGRINDER_GIZMO           = 36600,
+    NPC_DOC_ZAPNOZZLE               = 36608,
     NPC_CAPTURING_BUNNY_1           = 37872,
     NPC_CAPTURING_BUNNY_2           = 37895,
     NPC_CAPTURING_BUNNY_3           = 37896,
@@ -189,6 +193,20 @@ enum LostIslesSpells
 {
     SPELL_COSMETIC_STATE_DEATH      = 81238,
     SPELL_JUMPER_CABLES             = 69022,
+    // Don't Go Into The Light! (14239), the client's own spells for the scene: the master spell triggers the placement
+    // teleport onto the beach, whose script effect lays the player low with Near Death! (stun, invisible to others,
+    // its light); the player then summons their own Doc (visible to them only), who talks with Gizmo through the force
+    // cast and the two dummies, offers the quest, and wakes them with Quest Complete, the quest's reward spell. The
+    // player's Despawn Doc Zapnozzle sends him off again.
+    SPELL_DGITL_MASTER              = 69283,
+    SPELL_DGITL_PLACEMENT_TELEPORT  = 69040,
+    SPELL_NEAR_DEATH                = 69010,
+    SPELL_DGITL_SUMMON_DOC          = 69018,
+    SPELL_DGITL_FORCE_CAST_TO_PLAYER = 69085,
+    SPELL_DGITL_DUMMY_TO_GIZMO      = 69086,
+    SPELL_DGITL_DUMMY_BACK_TO_DOC   = 68257,
+    SPELL_DGITL_QUEST_COMPLETE      = 69013,
+    SPELL_DGITL_DESPAWN_DOC         = 69043,
     SPELL_THERMOHYDRAULIC_FLIPPERS_VISUAL = 68256,
     SPELL_THERMOHYDRAULIC_FLIPPERS  = 68258,
     SPELL_TRADE_PRINCE_CONTROLLER_AURA = 67433,
@@ -272,13 +290,13 @@ struct npc_lost_isles_gyrochoppa_pilot : public ScriptedAI
 };
 
 /*######
-## 36608 Doc Zapnozzle: wakes every new arrival up with his jumper cables (quest 14239)
+## 36608 Doc Zapnozzle: every new arrival's own Doc (Summon Doc Zapnozzle 69018, seen by them only) swims up from the
+## sea, wakes them with his jumper cables and lets them choose to live (quest 14239)
 ######*/
 
 enum DocZapnozzle
 {
-    EVENT_DOC_CHECK_ARRIVALS        = 1,
-    EVENT_DOC_NEXT_WELCOME,
+    EVENT_DOC_WATCH_PATIENT         = 1,
     EVENT_DOC_WELCOME_1,
     EVENT_DOC_WELCOME_2,
     EVENT_DOC_WELCOME_3,
@@ -289,47 +307,122 @@ enum DocZapnozzle
     EVENT_DOC_WELCOME_8,
     EVENT_DOC_REVIVED_1,
     EVENT_DOC_REVIVED_2,
-    EVENT_DOC_RESET,
 
-    ACTION_DOC_PLAYER_REVIVED       = 1,
+    POINT_DOC_BARREL                = 1,
+    ZONE_THE_LOST_ISLES             = 4720,
 };
 
-Position const DocPatientPos = { 533.97f, 3274.55f, 0.21f, 5.015f };
+// The barrel by the raft that he stands on: ArkCORE-NG's spawn of him (GPL-2.0), which matches retail screenshots
+Position const DocBarrelPos = { 537.445f, 3272.11f, 0.185513f, 3.20316f };
+// Where he comes up, 20 yards out in the water: MaNGOS Three's one spawn of him, a sniffed summon ((c) the MaNGOS
+// authors, CC BY-NC-SA 3.0). Summon Doc Zapnozzle aims at a nearby creature that no source names.
+Position const DocSummonPos = { 551.461f, 3260.25f, -0.566483f, 2.4277f };
+
+// The player's own Doc
+Creature* FindDocOf(Player* player)
+{
+    std::list<Creature*> docs;
+    player->GetCreatureListWithEntryInGrid(docs, NPC_DOC_ZAPNOZZLE, 60.0f);
+    for (Creature* doc : docs)
+        if (doc->IsAlive() && doc->IsSummon() && doc->ToTempSummon()->GetSummonerGUID() == player->GetGUID())
+            return doc;
+    return nullptr;
+}
+
+// Not woken yet: Don't Go Into the Light! is the Lost Isles' first quest; characters that went on to the escape pods
+// before the scene existed are left alone
+bool NeedsWaking(Player* player)
+{
+    return !player->IsGameMaster() && player->GetZoneId() == ZONE_THE_LOST_ISLES
+        && !player->IsQuestRewarded(QUEST_DONT_GO_INTO_THE_LIGHT)
+        && player->GetQuestStatus(QUEST_GOBLIN_ESCAPE_PODS_F) == QUEST_STATUS_NONE
+        && player->GetQuestStatus(QUEST_GOBLIN_ESCAPE_PODS_M) == QUEST_STATUS_NONE;
+}
+
+// The player summons their Doc a few seconds after landing, once the movie of Kezan's end is over
+void ScheduleDocSummon(Player* player, Milliseconds delay)
+{
+    player->m_Events.AddEventAtOffset([player]()
+    {
+        if (!player->HasAura(SPELL_NEAR_DEATH) || !NeedsWaking(player) || FindDocOf(player))
+            return;
+        if (player->GetMovie())
+            ScheduleDocSummon(player, 1s);
+        else
+            player->CastSpell(player, SPELL_DGITL_SUMMON_DOC, true);
+    }, delay);
+}
+
+// On landing from Kezan and on every login until woken: the master spell (the placement teleport and Near Death!,
+// spell_lost_isles_dgitl_placement), or only the Doc when they still lie near death
+void StartDocScene(Player* player)
+{
+    if (!NeedsWaking(player) || FindDocOf(player))
+        return;
+
+    player->m_Events.AddEventAtOffset([player]()
+    {
+        if (!NeedsWaking(player) || FindDocOf(player))
+            return;
+        if (player->HasAura(SPELL_NEAR_DEATH))
+            ScheduleDocSummon(player, 2s);
+        else
+            player->CastSpell(player, SPELL_DGITL_MASTER, true);
+    }, 1s);
+}
 
 struct npc_lost_isles_doc_zapnozzle : public ScriptedAI
 {
     npc_lost_isles_doc_zapnozzle(Creature* creature) : ScriptedAI(creature) { }
 
-    void Reset() override
+    void IsSummonedBy(WorldObject* summoner) override
     {
-        _events.Reset();
-        _patientGUID.Clear();
-        _gizmoGUID.Clear();
-        // A quest giver all along: nobody is listed as offering Don't Go Into the Light!, so only a player who has it
-        // (the scene gives it, or gave it before a restart reset him) sees the turn-in
-        me->SetNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
-        me->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
-        _events.ScheduleEvent(EVENT_DOC_CHECK_ARRIVALS, 2500ms);
-        _events.ScheduleEvent(EVENT_DOC_NEXT_WELCOME, 1s);
+        Player* player = summoner ? summoner->ToPlayer() : nullptr;
+        if (!player)
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _patientGUID = player->GetGUID();
+        // The quest is offered once he has done his work
+        me->RemoveNpcFlag(NPCFlags(UNIT_NPC_FLAG_QUESTGIVER | UNIT_NPC_FLAG_GOSSIP));
+        me->SetReactState(REACT_PASSIVE);
+        // Only his patient sees him, but the sharks would still go for him in the water
+        me->SetImmuneToNPC(true);
+        // Near Death! hides the patient with invisibility type 7 (100000); the Doc sees through it to treat them
+        me->m_invisibilityDetect.AddFlag(INVISIBILITY_UNK7);
+        me->m_invisibilityDetect.SetValue(INVISIBILITY_UNK7, 1000000);
+        me->SetWalk(false);
+        // His movement flags are ours (CREATURE_FLAG_EXTRA_NO_MOVE_FLAGS_UPDATE): the barrel has no collision and
+        // stands in the water, where the core would keep him swimming. He swims over and climbs onto it.
+        me->SetSwim(true);
+        me->GetMotionMaster()->MovePoint(POINT_DOC_BARREL, DocBarrelPos, false);
+        _events.ScheduleEvent(EVENT_DOC_WATCH_PATIENT, 2s);
     }
 
-    void MoveInLineOfSight(Unit* who) override
+    void MovementInform(uint32 type, uint32 id) override
     {
-        if (Player* player = who->ToPlayer())
-            CheckArrival(player);
+        if (type != POINT_MOTION_TYPE || id != POINT_DOC_BARREL)
+            return;
+
+        // Standing on the barrel: no swimming, held at its height
+        me->SetSwim(false);
+        me->SetDisableGravity(true);
+        if (Player* patient = ObjectAccessor::GetPlayer(*me, _patientGUID))
+            me->SetFacingToObject(patient);
+        _events.ScheduleEvent(EVENT_DOC_WELCOME_1, 1s);
     }
 
     void sQuestReward(Player* player, Quest const* quest, uint32 /*opt*/) override
     {
-        if (quest->GetQuestId() != QUEST_DONT_GO_INTO_THE_LIGHT)
+        if (quest->GetQuestId() != QUEST_DONT_GO_INTO_THE_LIGHT || player->GetGUID() != _patientGUID)
             return;
 
-        player->RemoveAurasDueToSpell(SPELL_COSMETIC_STATE_DEATH);
+        // The quest's reward spell, Quest Complete, has woken them (spell_lost_isles_dgitl_quest_complete)
+        me->RemoveNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
         me->Say(BCT_DOC_RIGHT_CHOICE, player);
-        if (player->GetGUID() == _patientGUID)
-            _events.ScheduleEvent(EVENT_DOC_REVIVED_1, 5s);
-        else
-            ReleasePlayer(player);
+        _events.ScheduleEvent(EVENT_DOC_REVIVED_1, 5s);
     }
 
     void UpdateAI(uint32 diff) override
@@ -339,143 +432,95 @@ struct npc_lost_isles_doc_zapnozzle : public ScriptedAI
         while (uint32 eventId = _events.ExecuteEvent())
         {
             Player* patient = ObjectAccessor::GetPlayer(*me, _patientGUID);
+            if (!patient || !patient->IsInWorld() || !patient->IsWithinDistInMap(me, 60.0f))
+            {
+                // Logged out or gone: the next login summons a new Doc
+                me->DespawnOrUnsummon();
+                return;
+            }
+
             switch (eventId)
             {
-                case EVENT_DOC_CHECK_ARRIVALS:
-                    for (Player* player : GetPlayersInRange(me, 10.0f))
-                        CheckArrival(player);
-                    _events.ScheduleEvent(EVENT_DOC_CHECK_ARRIVALS, 2500ms);
-                    break;
-                case EVENT_DOC_NEXT_WELCOME:
-                    if (_patientGUID.IsEmpty() && !_waiting.empty())
-                    {
-                        _patientGUID = *_waiting.begin();
-                        _waiting.erase(_waiting.begin());
-                        LOG_ERROR("scripts", "[doc-debug] welcome starts for {}", _patientGUID.ToString());
-                        _events.ScheduleEvent(EVENT_DOC_WELCOME_1, 500ms);
-                        _events.ScheduleEvent(EVENT_DOC_RESET, 2min);
-                    }
-                    _events.ScheduleEvent(EVENT_DOC_NEXT_WELCOME, 1s);
+                case EVENT_DOC_WATCH_PATIENT:
+                    _events.ScheduleEvent(EVENT_DOC_WATCH_PATIENT, 2s);
                     break;
                 case EVENT_DOC_WELCOME_1:
-                    if (patient)
-                        me->Say(BCT_DOC_GIZMO_WHAT_ARE_YOU_DOING, patient);
+                    me->Say(BCT_DOC_GIZMO_WHAT_ARE_YOU_DOING, patient);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_2, 5s);
                     break;
                 case EVENT_DOC_WELCOME_2:
-                    if (patient)
-                        me->Say(BCT_DOC_THATS_PLAYER, patient);
+                    me->Say(BCT_DOC_THATS_PLAYER, patient);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_3, 5s);
                     break;
                 case EVENT_DOC_WELCOME_3:
-                    if (_gizmoGUID.IsEmpty())
-                        if (Creature* gizmo = me->FindNearestCreature(NPC_GEARGRINDER_GIZMO, 15.0f))
-                            _gizmoGUID = gizmo->GetGUID();
-                    if (patient)
-                        if (Creature* gizmo = ObjectAccessor::GetCreature(*me, _gizmoGUID))
-                            gizmo->Say(BCT_GIZMO_SORRY_DOC, patient);
+                    // Doc to the player, the player to Gizmo, who answers and turns back to the Doc
+                    // (spell_lost_isles_dgitl_dummy_to_gizmo)
+                    DoCast(patient, SPELL_DGITL_FORCE_CAST_TO_PLAYER, true);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_4, 5s);
                     break;
                 case EVENT_DOC_WELCOME_4:
-                    if (patient)
-                        me->Say(BCT_DOC_STAY_BACK, patient);
+                    me->Say(BCT_DOC_STAY_BACK, patient);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_5, 2s);
                     break;
                 case EVENT_DOC_WELCOME_5:
-                    if (patient)
-                        DoCast(patient, SPELL_JUMPER_CABLES, true);
+                    DoCast(patient, SPELL_JUMPER_CABLES, true);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_6, 5s);
                     break;
                 case EVENT_DOC_WELCOME_6:
-                    if (patient)
-                    {
-                        me->Say(BCT_DOC_CLEAR, patient);
-                        DoCast(patient, SPELL_JUMPER_CABLES, true);
-                    }
+                    me->Say(BCT_DOC_CLEAR, patient);
+                    DoCast(patient, SPELL_JUMPER_CABLES, true);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_7, 5s);
                     break;
                 case EVENT_DOC_WELCOME_7:
-                    if (patient)
-                        DoCast(patient, SPELL_JUMPER_CABLES, true);
+                    DoCast(patient, SPELL_JUMPER_CABLES, true);
                     _events.ScheduleEvent(EVENT_DOC_WELCOME_8, 5s);
                     break;
                 case EVENT_DOC_WELCOME_8:
-                    if (patient)
-                    {
-                        me->Say(BCT_DOC_DONT_GO_INTO_THE_LIGHT, patient);
-                        // The quest has no objective: offered here and handed in to the Doc at once
-                        me->SetNpcFlag(NPCFlags(UNIT_NPC_FLAG_GOSSIP | UNIT_NPC_FLAG_QUESTGIVER));
-                        if (patient->GetQuestStatus(QUEST_DONT_GO_INTO_THE_LIGHT) == QUEST_STATUS_NONE)
-                        {
-                            if (Quest const* quest = sObjectMgr->GetQuestTemplate(QUEST_DONT_GO_INTO_THE_LIGHT))
-                                patient->AddQuestAndCheckCompletion(quest, me);
-                        }
-                        else
-                            // They had it already (a scene after a restart): free them soon, so a dropped quest brings
-                            // the scene back at once instead of after the two-minute timeout
-                            _events.RescheduleEvent(EVENT_DOC_RESET, 5s);
-                    }
-                    else
-                        _events.RescheduleEvent(EVENT_DOC_RESET, 1s);
+                    me->Say(BCT_DOC_DONT_GO_INTO_THE_LIGHT, patient);
+                    // The quest completes itself (QuestType 0): an exclamation mark, then straight to the reward
+                    me->SetNpcFlag(UNIT_NPC_FLAG_QUESTGIVER);
+                    patient->PlayerTalkClass->SendQuestGiverStatus(patient->GetQuestDialogStatus(me), me->GetGUID());
                     break;
                 case EVENT_DOC_REVIVED_1:
-                    if (patient)
-                        me->Say(BCT_DOC_MORE_SURVIVORS, patient);
+                    me->Say(BCT_DOC_MORE_SURVIVORS, patient);
                     _events.ScheduleEvent(EVENT_DOC_REVIVED_2, 5s);
                     break;
                 case EVENT_DOC_REVIVED_2:
-                    if (patient)
-                        ReleasePlayer(patient);
-                    [[fallthrough]];
-                case EVENT_DOC_RESET:
-                    _events.CancelEvent(EVENT_DOC_RESET);
-                    _events.CancelEvent(EVENT_DOC_REVIVED_1);
-                    me->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
-                    _patientGUID.Clear();
+                    patient->CastSpell(patient, SPELL_DGITL_DESPAWN_DOC, true);
+                    // In case the spell found no Doc to send off
+                    me->DespawnOrUnsummon(2s);
                     break;
                 default:
                     break;
             }
         }
-
-        if (!UpdateVictim())
-            return;
-
-        DoMeleeAttackIfReady();
     }
 
 private:
-    // A new arrival lies on the beach, stunned and "dead", until the Doc has woken them up
-    void CheckArrival(Player* player)
-    {
-        if (player->GetQuestStatus(QUEST_DONT_GO_INTO_THE_LIGHT) == QUEST_STATUS_REWARDED || player->IsGameMaster())
-            return;
-        if (player->GetGUID() == _patientGUID || _waiting.count(player->GetGUID()))
-            return;
-        if (!player->IsWithinDistInMap(me, 10.0f))
-            return;
-
-        LOG_ERROR("scripts", "[doc-debug] {} arrives (quest status {}), patient now {}", player->GetName(),
-            uint32(player->GetQuestStatus(QUEST_DONT_GO_INTO_THE_LIGHT)), _patientGUID.ToString());
-
-        player->NearTeleportTo(DocPatientPos.GetPositionX(), DocPatientPos.GetPositionY(), DocPatientPos.GetPositionZ(),
-            DocPatientPos.GetOrientation());
-        if (!player->HasAura(SPELL_COSMETIC_STATE_DEATH))
-            player->AddAura(SPELL_COSMETIC_STATE_DEATH, player);
-        player->SetControlled(true, UNIT_STATE_STUNNED);
-        _waiting.insert(player->GetGUID());
-    }
-
-    void ReleasePlayer(Player* player)
-    {
-        player->RemoveAurasDueToSpell(SPELL_COSMETIC_STATE_DEATH);
-        player->SetControlled(false, UNIT_STATE_STUNNED);
-    }
-
     EventMap _events;
-    std::set<ObjectGuid> _waiting;
     ObjectGuid _patientGUID;
-    ObjectGuid _gizmoGUID;
+};
+
+class player_lost_isles_dont_go_into_the_light : public PlayerScript
+{
+public:
+    player_lost_isles_dont_go_into_the_light() : PlayerScript("player_lost_isles_dont_go_into_the_light",
+        { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_UPDATE_ZONE }) { }
+
+    void OnPlayerLogin(Player* player) override
+    {
+        // Before the scene was rebuilt the quest was taken into the log; it never is now
+        if (player->GetZoneId() == ZONE_THE_LOST_ISLES && !player->IsQuestRewarded(QUEST_DONT_GO_INTO_THE_LIGHT)
+            && player->GetQuestStatus(QUEST_DONT_GO_INTO_THE_LIGHT) != QUEST_STATUS_NONE)
+            player->RemoveActiveQuest(QUEST_DONT_GO_INTO_THE_LIGHT);
+        StartDocScene(player);
+    }
+
+    void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 /*newArea*/) override
+    {
+        if (newZone == ZONE_THE_LOST_ISLES)
+            StartDocScene(player);
+    }
 };
 
 /*######
@@ -511,11 +556,17 @@ struct go_lost_isles_escape_pod : public GameObjectAI
 {
     go_lost_isles_escape_pod(GameObject* go) : GameObjectAI(go) { }
 
-    bool GossipHello(Player* player, bool /*reportUse*/) override
+    bool GossipHello(Player* player, bool reportUse) override
     {
+        // The 4.3.4 client reports the use when its Opening cast (3365, 1 s) begins; the pod opens when the cast is done
+        if (reportUse)
+            return false;
+
         if (player->GetQuestStatus(QUEST_GOBLIN_ESCAPE_PODS_M) != QUEST_STATUS_INCOMPLETE
             && player->GetQuestStatus(QUEST_GOBLIN_ESCAPE_PODS_F) != QUEST_STATUS_INCOMPLETE)
             return false;
+
+        // The survivor comes out of this pod: the summons' nearby-entry destination is the escape pod (conditions)
 
         if (player->HasAura(SPELL_TRADE_PRINCE_CONTROLLER_AURA))
         {
@@ -529,6 +580,27 @@ struct go_lost_isles_escape_pod : public GameObjectAI
         player->KilledMonsterCredit(NPC_GOBLIN_SURVIVOR);
         me->DespawnOrUnsummon();
         return true;
+    }
+};
+
+// The flippers and the Trade Prince's controller are for the swim to the pods only: Sassy takes them back when the
+// quest is handed in (npc_lost_isles_sassy_hardwrench_beach), and they go when it is abandoned
+void RemoveEscapePodFlippers(Player* player)
+{
+    player->RemoveAurasDueToSpell(SPELL_THERMOHYDRAULIC_FLIPPERS);
+    player->RemoveAurasDueToSpell(SPELL_THERMOHYDRAULIC_FLIPPERS_VISUAL);
+    player->RemoveAurasDueToSpell(SPELL_TRADE_PRINCE_CONTROLLER_AURA);
+}
+
+class player_lost_isles_escape_pods : public PlayerScript
+{
+public:
+    player_lost_isles_escape_pods() : PlayerScript("player_lost_isles_escape_pods", { PLAYERHOOK_ON_QUEST_ABANDON }) { }
+
+    void OnPlayerQuestAbandon(Player* player, uint32 questId) override
+    {
+        if (questId == QUEST_GOBLIN_ESCAPE_PODS_F || questId == QUEST_GOBLIN_ESCAPE_PODS_M)
+            RemoveEscapePodFlippers(player);
     }
 };
 
@@ -547,6 +619,9 @@ enum PodSurvivor
     NPC_POD_GALLYWIX                = 35649,
 };
 
+// How far under the water's surface a freed survivor swims
+constexpr float POD_SURVIVOR_DEPTH = 1.0f;
+
 struct npc_lost_isles_pod_survivor : public ScriptedAI
 {
     npc_lost_isles_pod_survivor(Creature* creature) : ScriptedAI(creature) { }
@@ -558,6 +633,13 @@ struct npc_lost_isles_pod_survivor : public ScriptedAI
 
     void IsSummonedBy(WorldObject* summoner) override
     {
+        // The pods float on the surface and the summon puts the survivor at the pod's height, so it swam in the air:
+        // drop it into the water, about a yard under the surface like the sniffed Gallywix in the bay (z -0.92)
+        float const waterZ = me->GetMap()->GetWaterLevel(me->GetPositionX(), me->GetPositionY());
+        if (waterZ > INVALID_HEIGHT && me->GetPositionZ() > waterZ - POD_SURVIVOR_DEPTH)
+            me->NearTeleportTo(me->GetPositionX(), me->GetPositionY(), waterZ - POD_SURVIVOR_DEPTH,
+                me->GetOrientation());
+
         if (Player* player = summoner ? summoner->ToPlayer() : nullptr)
         {
             DoCastSelf(SPELL_SWIM, true);
@@ -610,7 +692,7 @@ private:
 };
 
 /*######
-## 35650 Sassy Hardwrench (the beach): quest talk; Help Wanted takes the flippers back
+## 35650 Sassy Hardwrench (the beach): quest talk; takes the flippers back when Goblin Escape Pods is handed in
 ######*/
 
 enum SassyBeach
@@ -636,12 +718,16 @@ struct npc_lost_isles_sassy_hardwrench_beach : public ScriptedAI
                 break;
             case QUEST_HELP_WANTED:
                 Talk(SAY_SASSY_HELP_WANTED, player);
-                player->RemoveAurasDueToSpell(SPELL_THERMOHYDRAULIC_FLIPPERS_VISUAL);
-                player->RemoveAurasDueToSpell(SPELL_THERMOHYDRAULIC_FLIPPERS);
                 break;
             default:
                 break;
         }
+    }
+
+    void sQuestReward(Player* player, Quest const* quest, uint32 /*opt*/) override
+    {
+        if (quest->GetQuestId() == QUEST_GOBLIN_ESCAPE_PODS_F || quest->GetQuestId() == QUEST_GOBLIN_ESCAPE_PODS_M)
+            RemoveEscapePodFlippers(player);
     }
 };
 
@@ -835,6 +921,11 @@ enum ForemanDampwickMine
 struct npc_lost_isles_foreman_dampwick_mine : public ScriptedAI
 {
     npc_lost_isles_foreman_dampwick_mine(Creature* creature) : ScriptedAI(creature) { }
+
+    void sGossipSelect(Player* player, uint32 sender, uint32 action) override
+    {
+        HandleLostIslesGossipSpell(player, sender, action);
+    }
 
     void sQuestAccept(Player* player, Quest const* quest) override
     {
@@ -2647,6 +2738,11 @@ struct npc_lost_isles_town_defender : public ScriptedAI
             AttackStart(who);
     }
 
+    void sGossipSelect(Player* player, uint32 sender, uint32 action) override
+    {
+        HandleLostIslesGossipSpell(player, sender, action);
+    }
+
     void sQuestAccept(Player* player, Quest const* quest) override
     {
         SayTownQuestLine(player, quest->GetQuestId(), false);
@@ -3969,6 +4065,64 @@ struct npc_lost_isles_oomlot_warrior : public ScriptedAI
 };
 
 /*######
+## 38526 B.C. Eliminator: the town's cannons in Town-In-A-Box: Under Attack (24901). A player clicks one to man it
+## (72240) and fires with 72206. One nobody mans keeps firing at the attackers on its own while a player is near in
+## stage 6: the NPC fire (72695, the client's "Fire Cannon - NPC") and a Cannon Blast (72207) on an Oomlot Warrior.
+## No source has the NPC cannons' script; the spells are the client's.
+######*/
+
+enum BCEliminator
+{
+    SPELL_FIRE_CANNON_NPC           = 72695,
+    SPELL_CANNON_BLAST              = 72207,
+    EVENT_ELIMINATOR_FIRE           = 1,
+};
+
+constexpr float ELIMINATOR_RANGE = 70.0f;       // how far an unmanned cannon shoots
+constexpr float ELIMINATOR_PLAYER_RANGE = 120.0f; // it only fires while a player is this near
+
+struct npc_lost_isles_bc_eliminator : public VehicleAI
+{
+    npc_lost_isles_bc_eliminator(Creature* creature) : VehicleAI(creature) { }
+
+    void Reset() override
+    {
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_ELIMINATOR_FIRE, randtime(2s, 6s));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        VehicleAI::UpdateAI(diff);
+        _events.Update(diff);
+
+        if (_events.ExecuteEvent() != EVENT_ELIMINATOR_FIRE)
+            return;
+
+        _events.ScheduleEvent(EVENT_ELIMINATOR_FIRE, randtime(4s, 8s));
+
+        Vehicle* vehicle = me->GetVehicleKit();
+        if (!me->HasPhase(PHASE_TOWN_UNDER_ATTACK) || (vehicle && vehicle->GetPassenger(0))
+            || !me->SelectNearestPlayer(ELIMINATOR_PLAYER_RANGE))
+            return;
+
+        std::list<Creature*> warriors;
+        me->GetCreatureListWithEntryInGrid(warriors, NPC_OOMLOT_WARRIOR, ELIMINATOR_RANGE);
+        warriors.remove_if([](Creature* warrior) { return !warrior->IsAlive(); });
+        if (warriors.empty())
+            return;
+
+        Creature* target = Acore::Containers::SelectRandomContainerElement(warriors);
+        me->SetFacingToObject(target);
+        DoCastSelf(SPELL_FIRE_CANNON_NPC, true);
+        me->CastSpell(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), SPELL_CANNON_BLAST, true);
+    }
+
+private:
+    EventMap _events;
+};
+
+/*######
 ## 38696 Yngwie: the Oomlot leader of Send a Message (24929)
 ######*/
 
@@ -4762,6 +4916,7 @@ enum FlyingBomber
     SPELL_SASSY_YELL_03             = 73185,
     SPELL_BOMBER_ON_FIRE            = 73191,
     SPELL_AREA_TRIGGER_BUNNY        = 73201, // triggers 73200, 73202, 73203
+    SPELL_BOMBER_SMOKING            = 73192, // Old Friends: Flying Bomber's Smoking (after the fireball hits)
     SPELL_STOP_PLAYING_MUSIC        = 90247,
 
     SOUND_BOMBER_TAKE_OFF           = 23722,
@@ -4771,6 +4926,8 @@ enum FlyingBomber
 
     NPC_SASSY_HARDWRENCH_BOMBER     = 38869,
     SAY_BOMBER_SASSY_HANG_ON        = 0,
+    SAY_BOMBER_SASSY_BEHIND_YOU     = 1, // Sassy Yell 02 (73112): "OH MY GOSH! BEHIND YOU!!!" (ArkCORE-NG's text)
+    SAY_BOMBER_SASSY_ON_FIRE        = 2, // Sassy Yell 03 (73185): "WE'RE ON FIRE!" (ArkCORE-NG's text)
     POINT_BOMBER_LANDED             = 1,
 };
 
@@ -4856,6 +5013,7 @@ struct npc_lost_isles_flying_bomber : public VehicleAI
                         BomberFireballTarget.GetPositionZ(), SPELL_SUMMON_GIANT_FIREBALL, true);
                     if (player)
                         player->CastSpell(player, SPELL_SASSY_YELL_02, true);
+                    DoCastSelf(SPELL_BOMBER_SMOKING, true);
                     _sound = SOUND_BOMBER_FIREBALL;
                     _events.ScheduleEvent(EVENT_BOMBER_ENGINE_SOUND, 1s);
                     break;
@@ -4895,6 +5053,38 @@ private:
     ObjectGuid _playerGUID;
     ObjectGuid _sassyGUID;
     uint32 _sound = 0;
+};
+
+/*######
+## Old Friends: Sassy Yell 02 (73112) and 03 (73185) hit the player; Sassy, who rides the same bomber, says the line
+## (the client's broadcast texts, as ArkCORE-NG's creature_text pairs them). Yells 04 to 08 have no known text.
+######*/
+
+class spell_lost_isles_old_friends_sassy_yell : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_old_friends_sassy_yell);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetHitUnit() ? GetHitUnit()->ToPlayer() : nullptr;
+        Unit* bomber = player ? player->GetVehicleBase() : nullptr;
+        Vehicle* vehicle = bomber ? bomber->GetVehicleKit() : nullptr;
+        if (!vehicle)
+            return;
+
+        uint8 const group = GetSpellInfo()->Id == SPELL_SASSY_YELL_02 ? SAY_BOMBER_SASSY_BEHIND_YOU : SAY_BOMBER_SASSY_ON_FIRE;
+        for (auto const& [seat, info] : vehicle->Seats)
+            if (Unit* passenger = ObjectAccessor::GetUnit(*bomber, info.Passenger.Guid))
+                if (passenger->GetEntry() == NPC_SASSY_HARDWRENCH_BOMBER)
+                    if (Creature* sassy = passenger->ToCreature())
+                        sassy->AI()->Talk(group, player);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_old_friends_sassy_yell::HandleScript, EFFECT_0,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
 };
 
 /*######
@@ -4972,6 +5162,555 @@ enum LostIslesLateStages
     EVENT_LATE_RIDE_START           = 1,
     EVENT_LATE_RIDE_TIMEOUT,
     LATE_RIDE_MAX_LEGS              = 10,
+};
+
+/*######
+## 38318 Mechashark X-Steam: A Goblin in Shark's Clothing (24817). A Mechashark X-Steam Controller (202108) casts
+## 71662, which makes the player cast 71648: the shark is summoned as the player's vehicle (SummonProperties 827) and
+## they fight The Hammer (36682) with its three spells. The shark carries its visual (71663). It belongs to the Dire
+## Strait: outside it the player is warned with the client's own line (broadcast text 38282, the warning aura 71749
+## shows it on the buff bar), and still outside after the grace time the shark falls apart and puts them down. No
+## source has the shark's script; the spells and the line are the client's.
+######*/
+
+enum MechasharkXSteam
+{
+    AREA_DIRE_STRAIT                    = 4816,
+    SPELL_MECHASHARK_VISUAL             = 71663, // A Goblin In Shark's Clothing: Mechashark X-Steam's Visual Aura
+    SPELL_LEAVING_DIRE_STRAIT_WARNING   = 71749,
+    TEXT_LEAVING_DIRE_STRAIT            = 38282, // "Return to the Dire Strait or the Mechashark X-Steam will ..."
+    EVENT_MECHASHARK_CHECK_AREA         = 1,
+};
+
+constexpr float MECHASHARK_FREE_RANGE = 80.0f; // yards from where it was summoned that never count as leaving
+constexpr Seconds MECHASHARK_GRACE = 10s;
+
+struct npc_lost_isles_mechashark : public VehicleAI
+{
+    npc_lost_isles_mechashark(Creature* creature) : VehicleAI(creature) { }
+
+    void IsSummonedBy(WorldObject* /*summoner*/) override
+    {
+        DoCastSelf(SPELL_MECHASHARK_VISUAL, true);
+    }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        Player* player = passenger->ToPlayer();
+        if (!player)
+            return;
+
+        if (apply)
+        {
+            _playerGUID = player->GetGUID();
+            _home = me->GetPosition(); // the player boards where the controller summoned the shark
+            _events.ScheduleEvent(EVENT_MECHASHARK_CHECK_AREA, 1s);
+        }
+        else
+        {
+            player->RemoveAurasDueToSpell(SPELL_LEAVING_DIRE_STRAIT_WARNING);
+            _events.Reset();
+            me->DespawnOrUnsummon(1s);
+        }
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        VehicleAI::UpdateAI(diff);
+        _events.Update(diff);
+
+        if (_events.ExecuteEvent() != EVENT_MECHASHARK_CHECK_AREA)
+            return;
+
+        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        if (!player || player->GetVehicleBase() != me)
+            return;
+
+        bool const outside = me->GetAreaId() != AREA_DIRE_STRAIT && me->GetExactDist2d(&_home) > MECHASHARK_FREE_RANGE;
+        if (!outside)
+        {
+            _outsideFor = 0s;
+            player->RemoveAurasDueToSpell(SPELL_LEAVING_DIRE_STRAIT_WARNING);
+        }
+        else if (_outsideFor == 0s)
+        {
+            me->Whisper(TEXT_LEAVING_DIRE_STRAIT, player, true);
+            player->CastSpell(player, SPELL_LEAVING_DIRE_STRAIT_WARNING, true);
+            _outsideFor = 1s;
+        }
+        else if ((_outsideFor += 1s) > MECHASHARK_GRACE)
+        {
+            if (Vehicle* vehicle = me->GetVehicleKit())
+                vehicle->RemoveAllPassengers(); // PassengerBoarded(false) despawns the shark
+            return;
+        }
+
+        _events.ScheduleEvent(EVENT_MECHASHARK_CHECK_AREA, 1s);
+    }
+
+private:
+    EventMap _events;
+    ObjectGuid _playerGUID;
+    Position _home;
+    Seconds _outsideFor = 0s;
+};
+
+/*######
+## 39074 Pride of Kezan: The Pride of Kezan (25066). Sassy Hardwrench at Warchief's Lookout gives it; accepting it, or
+## her "I am ready." while it is under way, makes the player cast 73431, whose 73430 summons the bomber as their vehicle
+## (SummonProperties 827). The player flies it (Flight Speed Aura 73446) and shoots down the Gnomeregan Stealth Fighters
+## (39039) with its two spells. It smokes (73490) and then burns (73493) as it takes damage. Flown away from the fight it
+## shows the leaving-area warning (73428); still away after the grace time, the player bails out on a parachute (73455).
+## No source has its script; the spells are the client's.
+######*/
+
+enum PrideOfKezan
+{
+    SPELL_PRIDE_FLIGHT_SPEED            = 73446,
+    SPELL_PRIDE_LEAVING_AREA_WARNING    = 73428,
+    SPELL_PRIDE_PARACHUTE_MASTER        = 73455,
+    SPELL_PRIDE_SMOKING                 = 73490,
+    SPELL_PRIDE_ON_FIRE                 = 73493,
+    SPELL_STEALTH_FIGHTER_ON_FIRE       = 73481,
+    EVENT_PRIDE_CHECK_AREA              = 1,
+};
+
+// The middle of the Gnomeregan Stealth Fighters' sky over Warchief's Lookout and the Tranquil Coast, and how far from it
+// the bomber may fly (the fighters span some 500 yards)
+Position const PrideOfKezanSky = { 1862.0f, 2973.0f, 100.0f, 0.0f };
+constexpr float PRIDE_RANGE = 450.0f;
+constexpr Seconds PRIDE_GRACE = 10s;
+
+struct npc_lost_isles_pride_of_kezan : public VehicleAI
+{
+    npc_lost_isles_pride_of_kezan(Creature* creature) : VehicleAI(creature) { }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        Player* player = passenger->ToPlayer();
+        if (!player)
+            return;
+
+        if (apply)
+        {
+            _playerGUID = player->GetGUID();
+            me->SetCanFly(true);
+            me->SetDisableGravity(true);
+            DoCastSelf(SPELL_PRIDE_FLIGHT_SPEED, true);
+            _events.ScheduleEvent(EVENT_PRIDE_CHECK_AREA, 1s);
+        }
+        else
+        {
+            player->RemoveAurasDueToSpell(SPELL_PRIDE_LEAVING_AREA_WARNING);
+            _events.Reset();
+            me->DespawnOrUnsummon(1s);
+        }
+    }
+
+    void DamageTaken(Unit* /*attacker*/, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
+    {
+        float const pct = (float(me->GetHealth()) - float(damage)) * 100.0f / float(me->GetMaxHealth());
+        if (pct < 60.0f && !me->HasAura(SPELL_PRIDE_SMOKING))
+            DoCastSelf(SPELL_PRIDE_SMOKING, true);
+        if (pct < 30.0f && !me->HasAura(SPELL_PRIDE_ON_FIRE))
+            DoCastSelf(SPELL_PRIDE_ON_FIRE, true);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        VehicleAI::UpdateAI(diff);
+        _events.Update(diff);
+
+        if (_events.ExecuteEvent() != EVENT_PRIDE_CHECK_AREA)
+            return;
+
+        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        if (!player || player->GetVehicleBase() != me)
+            return;
+
+        if (me->GetExactDist2d(&PrideOfKezanSky) <= PRIDE_RANGE)
+        {
+            _awayFor = 0s;
+            player->RemoveAurasDueToSpell(SPELL_PRIDE_LEAVING_AREA_WARNING);
+        }
+        else if (_awayFor == 0s)
+        {
+            player->CastSpell(player, SPELL_PRIDE_LEAVING_AREA_WARNING, true);
+            _awayFor = 1s;
+        }
+        else if ((_awayFor += 1s) > PRIDE_GRACE)
+        {
+            // The parachute's master spell takes the player out of the seat; PassengerBoarded(false) removes the bomber
+            player->CastSpell(player, SPELL_PRIDE_PARACHUTE_MASTER, true);
+            if (player->GetVehicleBase() == me)
+                if (Vehicle* vehicle = me->GetVehicleKit())
+                    vehicle->RemoveAllPassengers();
+            return;
+        }
+
+        _events.ScheduleEvent(EVENT_PRIDE_CHECK_AREA, 1s);
+    }
+
+private:
+    EventMap _events;
+    ObjectGuid _playerGUID;
+    Seconds _awayFor = 0s;
+};
+
+/*######
+## 39039 Gnomeregan Stealth Fighter: catches fire (73481) when the Pride of Kezan has shot it half down
+######*/
+
+struct npc_lost_isles_stealth_fighter : public VehicleAI
+{
+    npc_lost_isles_stealth_fighter(Creature* creature) : VehicleAI(creature) { }
+
+    void DamageTaken(Unit* /*attacker*/, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
+    {
+        if (damage < me->GetHealth() && (me->GetHealth() - damage) * 2 < me->GetMaxHealth()
+            && !me->HasAura(SPELL_STEALTH_FIGHTER_ON_FIRE))
+            DoCastSelf(SPELL_STEALTH_FIGHTER_ON_FIRE, true);
+    }
+};
+
+/*######
+## Zombies vs. Super Booster Rocket Boots (24942): the boots (item 52013) cast 72891, whose script effect makes the
+## player put them on: 72889 summons the Super Booster Rocket Boots (38802) as their vehicle (SummonProperties 827).
+## Boarded, the boots run their blast (72885, the "AICast on Enter Seat" 72897's aura), which every half second hits
+## the zombies around (72886, credit through npc_lost_isles_goblin_zombie). Leaving them takes them off.
+######*/
+
+enum SuperBoosterRocketBoots
+{
+    SPELL_ROCKET_BOOTS_SUMMON           = 72889,
+    SPELL_ROCKET_BOOTS_DAMAGE_TRIGGER   = 72885,
+};
+
+class spell_lost_isles_rocket_boots_item : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_rocket_boots_item);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        if (Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr)
+            if (!player->GetVehicle())
+                player->CastSpell(player, SPELL_ROCKET_BOOTS_SUMMON, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_lost_isles_rocket_boots_item::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+struct npc_lost_isles_rocket_boots : public VehicleAI
+{
+    npc_lost_isles_rocket_boots(Creature* creature) : VehicleAI(creature) { }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (!passenger->IsPlayer())
+            return;
+
+        if (apply)
+            DoCastSelf(SPELL_ROCKET_BOOTS_DAMAGE_TRIGGER, true);
+        else
+        {
+            me->RemoveAurasDueToSpell(SPELL_ROCKET_BOOTS_DAMAGE_TRIGGER);
+            me->DespawnOrUnsummon(500ms);
+        }
+    }
+};
+
+/*######
+## 39194 Blastshadow the Brutemaster: Throw It On the Ground! (25123). His soulstone chest (202574) appears where he
+## falls (73703's object; it had three spawns that could be looted with him alive) and his Delicia Whipsnaps (39195)
+## leaves with him, back when he respawns.
+######*/
+
+enum Blastshadow
+{
+    NPC_DELICIA_WHIPSNAPS               = 39195,
+    GO_BLASTSHADOWS_SOULSTONE           = 202574,
+};
+
+struct npc_lost_isles_blastshadow : public ScriptedAI
+{
+    npc_lost_isles_blastshadow(Creature* creature) : ScriptedAI(creature) { }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        Seconds const respawn = Seconds(me->GetRespawnDelay());
+        me->SummonGameObject(GO_BLASTSHADOWS_SOULSTONE, me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(),
+            me->GetOrientation(), 0.0f, 0.0f, 0.0f, 0.0f, 120);
+        if (Creature* delicia = me->FindNearestCreature(NPC_DELICIA_WHIPSNAPS, 40.0f))
+            delicia->DespawnOrUnsummon(1s, respawn);
+    }
+};
+
+/*######
+## It's a Town-In-A-Box (14245): the plunger (201938, 68938) deploys the town; four smoke bunnies (71093, 71095,
+## 71096, 71097: 38069 with the ForgeArms smoke 71094) puff up around it. The bunnies' spots are ours (no source has
+## them); the spells and auras are the client's (ArkCORE-NG's addon gives 38069 its auras).
+######*/
+
+std::array<uint32, 4> const TownSmokeSpells = { 71093, 71095, 71096, 71097 };
+
+class spell_lost_isles_town_in_a_box_plunger : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_town_in_a_box_plunger);
+
+    void HandleAfterCast()
+    {
+        Unit* caster = GetCaster();
+        if (!caster)
+            return;
+
+        for (uint8 i = 0; i < TownSmokeSpells.size(); ++i)
+        {
+            float const angle = caster->GetOrientation() + float(M_PI) / 4.0f + i * float(M_PI) / 2.0f;
+            float const x = caster->GetPositionX() + 12.0f * std::cos(angle);
+            float const y = caster->GetPositionY() + 12.0f * std::sin(angle);
+            caster->CastSpell(x, y, caster->GetMapHeight(x, y, caster->GetPositionZ() + 5.0f), TownSmokeSpells[i], true);
+        }
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_lost_isles_town_in_a_box_plunger::HandleAfterCast);
+    }
+};
+
+/*######
+## Warchief's Revenge (14243): the Rope Ladders (196396, 196397) by the Alliance ship cast 68838 / 68840 on the
+## swimmer, whose script effects lead to Rope Ladder A / B (68488 / 68489, jumps). No source has where the jumps land;
+## the player climbs onto the lower deck by each ladder, where the sailors stand (ours).
+######*/
+
+Position const RopeLadderDeckA = { 970.5f, 3817.0f, 3.4f, 0.0f }; // by ladder 196396
+Position const RopeLadderDeckB = { 983.5f, 3812.0f, 3.4f, 0.0f }; // by ladder 196397
+
+class spell_lost_isles_rope_ladder : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_rope_ladder);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetHitUnit() ? GetHitUnit()->ToPlayer() : nullptr;
+        if (!player)
+            return;
+
+        Position const& deck = GetSpellInfo()->Id == 68838 ? RopeLadderDeckA : RopeLadderDeckB;
+        player->GetMotionMaster()->MoveJump(deck, 10.0f, 12.0f);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_rope_ladder::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+/*######
+## Gossip options no source has, for quest items or vehicles a player can lose: the quest givers' own requests (the
+## client's broadcast texts, options from the builder's LOST_ISLES_GOSSIP_OPTIONS) cast the quest's own spell.
+######*/
+
+struct LostIslesGossipSpell
+{
+    uint32 menu;
+    uint32 option;
+    uint32 quest;
+    uint32 spell;
+};
+
+std::array<LostIslesGossipSpell, 5> const LostIslesGossipSpells =
+{{
+    { 10823, 0, 14021, 68062 }, // Dampwick: "Er, Dampwick, I need another miner...." (Frightened Miner Controller)
+    { 10965, 0, 24671, 74172 }, // Hobart: "I seem to have misplaced the remote control fireworks."
+    { 10965, 1, 25214, 73967 }, // Hobart: "Hobart, I need more single-stage booster rockets!"
+    { 11074, 0, 24942, 72948 }, // Coach Crosscheck: "Coach, can I get some rocket boots?"
+    { 12582, 0, 25066, 73431 }, // Sassy at the Lookout: "I am ready." (The Pride of Kezan's bomber)
+}};
+
+bool HandleLostIslesGossipSpell(Player* player, uint32 menu, uint32 option)
+{
+    for (LostIslesGossipSpell const& entry : LostIslesGossipSpells)
+    {
+        if (entry.menu != menu || entry.option != option)
+            continue;
+
+        CloseGossipMenuFor(player);
+        if (player->GetQuestStatus(entry.quest) == QUEST_STATUS_INCOMPLETE && !player->GetVehicle())
+            player->CastSpell(player, entry.spell, true);
+        return true;
+    }
+    return false;
+}
+
+/*######
+## 36719 Pterrordax Scavenger: circles in the sky over its spot like a vulture. TDB 434 only lets the flying ones drift
+## 5-10 yards about their spot, which in the air looks like hovering; the ones TDB has standing stay perched. Each
+## circles on its own radius and in its own direction (from its spawn), so a flock does not wheel in step.
+######*/
+
+struct npc_lost_isles_pterrordax_scavenger : public ScriptedAI
+{
+    npc_lost_isles_pterrordax_scavenger(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        Circle();
+    }
+
+    void JustReachedHome() override
+    {
+        Circle();
+    }
+
+private:
+    void Circle()
+    {
+        if (me->GetDefaultMovementType() == IDLE_MOTION_TYPE || me->IsInCombat())
+            return;
+
+        uint32 const seed = me->GetSpawnId();
+        float const radius = 15.0f + float(seed % 21);
+        Position const& home = me->GetHomePosition();
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MoveCirclePath(home.GetPositionX(), home.GetPositionY(), home.GetPositionZ(), radius,
+            seed % 2 == 0, 16);
+    }
+};
+
+/*######
+## 43359 ELM General Purpose Bunny Infinite Hide Body, the Lost Isles' (stage 8 on): the erupted volcano throws fiery
+## boulders. While a player is near, each one casts one of the client's four "Volcano: Fiery Boulder" spells (74070,
+## 74072, 74076, 74085) at the ground nearby every few seconds. ArkCORE-NG wrote this and left it switched off (its
+## core could not run it); the spells are the client's, the spots and timing ours. Bound per spawn: Kezan's 43359 are
+## the bombardment's anchors (zone_kezan.cpp).
+######*/
+
+enum VolcanoBoulders
+{
+    EVENT_VOLCANO_BOULDER           = 1,
+};
+
+std::array<uint32, 4> const VolcanoBoulderSpells = { 74070, 74072, 74076, 74085 };
+constexpr float VOLCANO_BOULDER_PLAYER_RANGE = 150.0f;
+
+struct npc_lost_isles_volcano_boulder_bunny : public ScriptedAI
+{
+    npc_lost_isles_volcano_boulder_bunny(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        _events.Reset();
+        _events.ScheduleEvent(EVENT_VOLCANO_BOULDER, randtime(1s, 6s));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        if (_events.ExecuteEvent() != EVENT_VOLCANO_BOULDER)
+            return;
+
+        _events.ScheduleEvent(EVENT_VOLCANO_BOULDER, randtime(4s, 6s));
+        if (!me->SelectNearestPlayer(VOLCANO_BOULDER_PLAYER_RANGE))
+            return;
+
+        float const angle = frand(0.0f, 2.0f * float(M_PI));
+        float const distance = frand(10.0f, 35.0f);
+        float x = me->GetPositionX() + distance * std::cos(angle);
+        float y = me->GetPositionY() + distance * std::sin(angle);
+        float z = me->GetMapHeight(x, y, me->GetPositionZ() + 30.0f);
+        if (z <= INVALID_HEIGHT)
+            z = me->GetPositionZ();
+        me->CastSpell(x, y, z, Acore::Containers::SelectRandomContainerElement(VolcanoBoulderSpells), true);
+    }
+
+private:
+    EventMap _events;
+};
+
+/*######
+## Good-bye, Sweet Oil (25207): the Big Red Button (205061) makes the player cast the Explosion Check (73900, the
+## credit). Then they summon the Explosion Controller Bunny (73888, 39383), which sets off the platform's three
+## explosions (73904, 73890, 73891) and shakes the player's camera (73905). The order and spells are the client's; the
+## timing is ours (no source has it).
+######*/
+
+enum GoodbyeSweetOil
+{
+    SPELL_SWEET_OIL_EXPLOSION_CHECK     = 73900,
+    SPELL_SWEET_OIL_SUMMON_CONTROLLER   = 73888,
+    SPELL_SWEET_OIL_EXPLOSIONS_01       = 73904,
+    SPELL_SWEET_OIL_EXPLOSIONS_02       = 73890,
+    SPELL_SWEET_OIL_EXPLOSIONS_03       = 73891,
+    SPELL_SWEET_OIL_CAMERA_SHAKE        = 73905,
+    EVENT_SWEET_OIL_EXPLOSIONS_01       = 1,
+    EVENT_SWEET_OIL_EXPLOSIONS_02,
+    EVENT_SWEET_OIL_EXPLOSIONS_03,
+};
+
+class spell_lost_isles_sweet_oil_explosion_check : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_sweet_oil_explosion_check);
+
+    void HandleAfterCast()
+    {
+        if (Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr)
+            player->CastSpell(player, SPELL_SWEET_OIL_SUMMON_CONTROLLER, true);
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_lost_isles_sweet_oil_explosion_check::HandleAfterCast);
+    }
+};
+
+struct npc_lost_isles_sweet_oil_controller : public ScriptedAI
+{
+    npc_lost_isles_sweet_oil_controller(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(WorldObject* summoner) override
+    {
+        if (Player* player = summoner ? summoner->ToPlayer() : nullptr)
+            _playerGUID = player->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        _events.ScheduleEvent(EVENT_SWEET_OIL_EXPLOSIONS_01, 500ms);
+        _events.ScheduleEvent(EVENT_SWEET_OIL_EXPLOSIONS_02, 2500ms);
+        _events.ScheduleEvent(EVENT_SWEET_OIL_EXPLOSIONS_03, 4500ms);
+        me->DespawnOrUnsummon(10s);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_SWEET_OIL_EXPLOSIONS_01:
+                    DoCastSelf(SPELL_SWEET_OIL_EXPLOSIONS_01, true);
+                    break;
+                case EVENT_SWEET_OIL_EXPLOSIONS_02:
+                    DoCastSelf(SPELL_SWEET_OIL_EXPLOSIONS_02, true);
+                    break;
+                case EVENT_SWEET_OIL_EXPLOSIONS_03:
+                    DoCastSelf(SPELL_SWEET_OIL_EXPLOSIONS_03, true);
+                    break;
+                default:
+                    break;
+            }
+            if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+                me->CastSpell(player, SPELL_SWEET_OIL_CAMERA_SHAKE, true);
+        }
+    }
+
+private:
+    EventMap _events;
+    ObjectGuid _playerGUID;
 };
 
 /*######
@@ -5203,6 +5942,149 @@ class spell_lost_isles_kaja_cola_zero_one : public SpellScript
 };
 
 /*######
+## 69040 Don't Go Into The Light!: Initial Placement Teleport (14239): the master spell's teleport onto the beach; its
+## script effect lays the player low: Near Death! (stunned and hidden), dead on the sand at 1 health. Their Doc follows.
+######*/
+
+class spell_lost_isles_dgitl_placement : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_dgitl_placement);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetHitPlayer();
+        if (!player)
+            return;
+
+        if (!player->HasAura(SPELL_NEAR_DEATH))
+            player->CastSpell(player, SPELL_NEAR_DEATH, true);
+        if (!player->HasAura(SPELL_COSMETIC_STATE_DEATH))
+            player->AddAura(SPELL_COSMETIC_STATE_DEATH, player);
+        player->SetHealth(1);
+        ScheduleDocSummon(player, 3s);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_dgitl_placement::HandleScript, EFFECT_1,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+/*######
+## 69018 Don't Go Into The Light!: Summon Doc Zapnozzle (14239): he comes up out of the sea, 20 yards out
+######*/
+
+class spell_lost_isles_dgitl_summon_doc : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_dgitl_summon_doc);
+
+    void SetDest(SpellDestination& dest)
+    {
+        dest.Relocate(DocSummonPos);
+    }
+
+    void Register() override
+    {
+        OnDestinationTargetSelect += SpellDestinationTargetSelectFn(spell_lost_isles_dgitl_summon_doc::SetDest,
+            EFFECT_0, TARGET_DEST_NEARBY_ENTRY);
+    }
+};
+
+/*######
+## 69086 Don't Go Into The Light!: Dummy from Character to Geargrinder Fajardo (14239): Gizmo (Fajardo in the spell's
+## name) is sorry, he thought the player was dead, and turns back to the Doc (68257 Dummy back to the Doc)
+######*/
+
+class spell_lost_isles_dgitl_dummy_to_gizmo : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_dgitl_dummy_to_gizmo);
+
+    // Its nearby-entry target has a range of 0 (self) and no condition names Gizmo: he is looked up within the effect's
+    // 13 yards once it is cast
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        if (!player)
+            return;
+
+        Creature* gizmo = player->FindNearestCreature(NPC_GEARGRINDER_GIZMO, 13.0f);
+        if (!gizmo)
+            return;
+
+        gizmo->Say(BCT_GIZMO_SORRY_DOC, player);
+        if (Creature* doc = FindDocOf(player))
+            gizmo->CastSpell(doc, SPELL_DGITL_DUMMY_BACK_TO_DOC, true);
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_lost_isles_dgitl_dummy_to_gizmo::HandleAfterCast);
+    }
+};
+
+/*######
+## 69013 Don't Go Into The Light!: Quest Complete (14239): the quest's reward spell, the Doc's last jolt: the player
+## comes back to life
+######*/
+
+class spell_lost_isles_dgitl_quest_complete : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_dgitl_quest_complete);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetHitPlayer();
+        if (!player)
+            return;
+
+        player->RemoveAurasDueToSpell(SPELL_NEAR_DEATH);
+        player->RemoveAurasDueToSpell(SPELL_COSMETIC_STATE_DEATH);
+        player->SetFullHealth();
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_dgitl_quest_complete::HandleScript, EFFECT_0,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+/*######
+## 69043 Don't Go Into The Light!: Despawn Doc Zapnozzle (14239): the player's own Doc goes to see to the next survivor
+######*/
+
+class spell_lost_isles_dgitl_despawn_doc : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_dgitl_despawn_doc);
+
+    void FilterTargets(std::list<WorldObject*>& targets)
+    {
+        ObjectGuid const casterGUID = GetCaster()->GetGUID();
+        targets.remove_if([casterGUID](WorldObject* target)
+        {
+            Creature* creature = target->ToCreature();
+            return !creature || creature->GetEntry() != NPC_DOC_ZAPNOZZLE || !creature->IsSummon()
+                || creature->ToTempSummon()->GetSummonerGUID() != casterGUID;
+        });
+    }
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        if (Creature* doc = GetHitCreature())
+            doc->DespawnOrUnsummon(1s);
+    }
+
+    void Register() override
+    {
+        OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_lost_isles_dgitl_despawn_doc::FilterTargets,
+            EFFECT_0, TARGET_UNIT_SRC_AREA_ENTRY);
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_dgitl_despawn_doc::HandleScript, EFFECT_0,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+/*######
 ## 73702 Blastshadow's Soulstone (Throw It On the Ground!, 25123): using the soulstone (item 52481, from the chest that
 ## Blastshadow leaves) destroys it
 ######*/
@@ -5234,6 +6116,14 @@ Position const MineCartDestination = { 2364.0f, 1928.0f, 22.0f, 0.0f }; // besid
 struct npc_lost_isles_mine_cart : public npc_lost_isles_late_ride
 {
     npc_lost_isles_mine_cart(Creature* creature) : npc_lost_isles_late_ride(creature, MineCartDestination, 2.5f, 90s) { }
+
+    // Wild Mine Cart Ride's visual and rattling sounds (88223, 73767, 73768), the client's
+    void IsSummonedBy(WorldObject* /*summoner*/) override
+    {
+        DoCastSelf(88223, true);
+        DoCastSelf(73767, true);
+        DoCastSelf(73768, true);
+    }
 
     void RideEnded(Player* player) override
     {
@@ -5472,6 +6362,20 @@ void AddSC_zone_lost_isles()
     RegisterCreatureAI(npc_lost_isles_town_quest_giver);
     RegisterCreatureAI(npc_lost_isles_hobart_grapplehammer);
     RegisterCreatureAI(npc_lost_isles_megs_dreadshredder);
+    RegisterCreatureAI(npc_lost_isles_mechashark);
+    RegisterCreatureAI(npc_lost_isles_bc_eliminator);
+    RegisterSpellScript(spell_lost_isles_old_friends_sassy_yell);
+    RegisterCreatureAI(npc_lost_isles_pride_of_kezan);
+    RegisterCreatureAI(npc_lost_isles_stealth_fighter);
+    RegisterSpellScript(spell_lost_isles_sweet_oil_explosion_check);
+    RegisterCreatureAI(npc_lost_isles_sweet_oil_controller);
+    RegisterCreatureAI(npc_lost_isles_volcano_boulder_bunny);
+    RegisterCreatureAI(npc_lost_isles_pterrordax_scavenger);
+    RegisterSpellScript(spell_lost_isles_rocket_boots_item);
+    RegisterCreatureAI(npc_lost_isles_rocket_boots);
+    RegisterCreatureAI(npc_lost_isles_blastshadow);
+    RegisterSpellScript(spell_lost_isles_town_in_a_box_plunger);
+    RegisterSpellScript(spell_lost_isles_rope_ladder);
     RegisterCreatureAI(npc_lost_isles_wild_clucker);
     RegisterCreatureAI(npc_lost_isles_wild_clucker_egg);
     RegisterCreatureAI(npc_lost_isles_spiny_raptor);
@@ -5497,6 +6401,8 @@ void AddSC_zone_lost_isles()
     RegisterCreatureAI(npc_lost_isles_doc_zapnozzle_field);
     RegisterCreatureAI(npc_lost_isles_volcanoth);
     new player_lost_isles_volcanoth();
+    new player_lost_isles_dont_go_into_the_light();
+    new player_lost_isles_escape_pods();
     RegisterCreatureAI(npc_lost_isles_volcanoth_explosion_bunny);
     RegisterCreatureAI(npc_lost_isles_sassy_hardwrench_volcano);
     RegisterCreatureAI(npc_lost_isles_flying_bomber);
@@ -5507,6 +6413,11 @@ void AddSC_zone_lost_isles()
     RegisterSpellScript(spell_lost_isles_blastshadows_soulstone);
     RegisterCreatureAI(npc_lost_isles_mine_cart);
     RegisterSpellScript(spell_lost_isles_escape_velocity);
+    RegisterSpellScript(spell_lost_isles_dgitl_placement);
+    RegisterSpellScript(spell_lost_isles_dgitl_quest_complete);
+    RegisterSpellScript(spell_lost_isles_dgitl_summon_doc);
+    RegisterSpellScript(spell_lost_isles_dgitl_dummy_to_gizmo);
+    RegisterSpellScript(spell_lost_isles_dgitl_despawn_doc);
     RegisterCreatureAI(npc_lost_isles_footbomb_uniform);
     RegisterCreatureAI(npc_lost_isles_gallywix_docks);
 }
