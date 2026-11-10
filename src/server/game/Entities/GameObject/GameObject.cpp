@@ -1477,8 +1477,21 @@ bool GameObject::ActivateToQuest(Player* target) const
             }
         case GAMEOBJECT_TYPE_GOOBER:
             {
-                if (GetGOInfo()->goober.questId == -1 || target->GetQuestStatus(GetGOInfo()->goober.questId) == QUEST_STATUS_INCOMPLETE)
+                int32 const questId = GetGOInfo()->goober.questId;
+                if (questId == -1 || target->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
                     return true;
+
+                // The quest's alternatives too (a positive exclusive group: one quest per gender, race or class), as the
+                // Lost Isles' escape pods serve both Goblin Escape Pods (14001, 14474) with one quest id
+                if (questId > 0)
+                    if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                        if (quest->GetExclusiveGroup() > 0)
+                        {
+                            auto bounds = sObjectMgr->mExclusiveQuestGroups.equal_range(quest->GetExclusiveGroup());
+                            for (auto itr = bounds.first; itr != bounds.second; ++itr)
+                                if (target->GetQuestStatus(itr->second) == QUEST_STATUS_INCOMPLETE)
+                                    return true;
+                        }
                 break;
             }
         default:
