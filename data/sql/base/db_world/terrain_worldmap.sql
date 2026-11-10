@@ -38,6 +38,8 @@ INSERT INTO `terrain_worldmap` VALUES
 (638,545,'Gilneas'),
 (655,678,'Gilneas_terrain1'),
 (656,679,'Gilneas_terrain2'),
+(659,682,'The Lost Isles (MaelstromCore)'),
+(661,681,'The Lost Isles (MaelstromCore)'),
 (719,683,'Hyjal_terrain1');
 /*!40000 ALTER TABLE `terrain_worldmap` ENABLE KEYS */;
 UNLOCK TABLES;

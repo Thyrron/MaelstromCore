@@ -36,7 +36,7 @@ CREATE TABLE `version` (
 LOCK TABLES `version` WRITE;
 /*!40000 ALTER TABLE `version` DISABLE KEYS */;
 INSERT INTO `version` VALUES
-('AzerothCore rev. ca7dea21f9f1+ 2026-11-07 13:33:55 +0100 (master branch) (Win64, RelWithDebInfo, Static)','ca7dea21f9f1+','ACDB 335.17-dev',17);
+('AzerothCore rev. 92bea24ea738+ 2026-11-09 12:29:51 +0100 (master branch) (Win64, RelWithDebInfo, Static)','92bea24ea738+','ACDB 335.17-dev',17);
 /*!40000 ALTER TABLE `version` ENABLE KEYS */;
 UNLOCK TABLES;
 

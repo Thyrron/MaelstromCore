@@ -22,4 +22,7 @@ UPDATE `creature_template` SET `VehicleId` = 657 WHERE `entry` = 38918;
 UPDATE `creature_template` SET `VehicleId` = 530 WHERE `entry` = 39152;
 UPDATE `creature_template` SET `VehicleId` = 688 WHERE `entry` = 39329;
 UPDATE `creature_template` SET `VehicleId` = 696 WHERE `entry` = 39598;
+UPDATE `creature_template` SET `VehicleId` = 628 WHERE `entry` = 38318;
+UPDATE `creature_template` SET `VehicleId` = 669 WHERE `entry` = 39074;
+UPDATE `creature_template` SET `VehicleId` = 653 WHERE `entry` = 38802;
 UPDATE `creature_template` SET `speed_walk` = 0.8, `speed_run` = 2.0 WHERE `entry` = 34840;

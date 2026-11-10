@@ -37,6 +37,8 @@ LOCK TABLES `terrain_swap_defaults` WRITE;
 INSERT INTO `terrain_swap_defaults` VALUES
 (0,736,'Twilight Highlands - Dragonmaw Port'),
 (1,719,'Mount Hyjal default terrain'),
+(648,659,'The Lost Isles, stages 8-10 (MaelstromCore)'),
+(648,661,'The Lost Isles, stages 5-8 (MaelstromCore)'),
 (654,638,'Gilneas default terrain'),
 (654,655,'Gilneas - Duskmist Shore broken');
 /*!40000 ALTER TABLE `terrain_swap_defaults` ENABLE KEYS */;
