@@ -405,6 +405,7 @@ enum OpcodeClient : uint16
     CMSG_QUERY_BATTLEFIELD_STATE                    = 0x7202,
     CMSG_QUEST_GIVER_STATUS_QUERY              = 0x4407,
     CMSG_REQUEST_CEMETERY_LIST                      = 0x720A,
+    CMSG_RETURN_TO_GRAVEYARD                        = 0x301E,
     CMSG_UNREGISTER_ALL_ADDON_PREFIXES              = 0x3D54,
     CMSG_DB_QUERY_BULK                              = 0x2401,
     CMSG_SAVE_CUF_PROFILES                          = 0x730E,

@@ -58,7 +58,7 @@ public:
     GraveyardStruct const* GetDefaultGraveyard(TeamId teamId);
     GraveyardStruct const* GetClosestGraveyard(Player* player, TeamId teamId, bool nearCorpse = false);
     GraveyardStruct const* GetClosestGraveyard(uint32 mapId, float x, float y, float z, TeamId teamId,
-        uint32 areaId, uint32 zoneId, bool isDeathKnight);
+        uint32 areaId, uint32 zoneId, bool isDeathKnight, Player* conditionTarget = nullptr);
     GraveyardData const* FindGraveyardData(uint32 id, uint32 zone);
     GraveyardContainer const& GetGraveyardData() const { return _graveyardStore; }
     // The graveyards linked to a zone (graveyard_zone)

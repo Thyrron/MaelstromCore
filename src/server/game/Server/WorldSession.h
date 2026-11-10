@@ -1108,6 +1108,7 @@ public:                                                 // opcodes handlers
     void HandleNextCinematicCamera(WorldPacket& recvPacket);
     void HandleCompleteMovie(WorldPacket& recvPacket);
     void HandleRequestCemeteryList(WorldPacket& recvPacket);
+    void HandleReturnToGraveyard(WorldPacket& recvPacket);
 
     void HandlePageTextQueryOpcode(WorldPacket& recvPacket);
 

@@ -16,6 +16,7 @@
  */
 
 #include "GameGraveyard.h"
+#include "ConditionMgr.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Log.h"
@@ -120,11 +121,11 @@ GraveyardStruct const* Graveyard::GetClosestGraveyard(Player* player, TeamId tea
     player->GetZoneAndAreaId(zoneId, areaId);
 
     return GetClosestGraveyard(mapId, x, y, z, teamId, areaId, zoneId,
-        player->IsClass(CLASS_DEATH_KNIGHT, CLASS_CONTEXT_GRAVEYARD));
+        player->IsClass(CLASS_DEATH_KNIGHT, CLASS_CONTEXT_GRAVEYARD), player);
 }
 
 GraveyardStruct const* Graveyard::GetClosestGraveyard(uint32 mapId, float x, float y, float z, TeamId teamId,
-    uint32 areaId, uint32 zoneId, bool isDeathKnight)
+    uint32 areaId, uint32 zoneId, bool isDeathKnight, Player* conditionTarget)
 {
     if (!zoneId && !areaId)
     {
@@ -212,6 +213,14 @@ GraveyardStruct const* Graveyard::GetClosestGraveyard(uint32 mapId, float x, flo
         if (!isDeathKnight && (graveyardLink.safeLocId == GRAVEYARD_EBON_HOLD || graveyardLink.safeLocId == GRAVEYARD_ARCHERUS))
         {
             continue;
+        }
+
+        // 4.3.4: graveyards that serve only part of a zone's story (the Lost Isles' stages) carry conditions
+        if (conditionTarget)
+        {
+            ConditionList conditions = sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_GRAVEYARD, graveyardLink.safeLocId);
+            if (!conditions.empty() && !sConditionMgr->IsObjectMeetToConditions(conditionTarget, conditions))
+                continue;
         }
 
         // find now nearest graveyard at other map

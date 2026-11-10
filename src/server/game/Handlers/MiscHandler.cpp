@@ -957,6 +957,15 @@ void WorldSession::HandleCompleteCinematic(WorldPacket& /*recv_data*/)
     GetPlayer()->GetCinematicMgr().EndCinematic();
 }
 
+// 4.3.4: a ghost's "Return to Graveyard" button
+void WorldSession::HandleReturnToGraveyard(WorldPacket& /*recvData*/)
+{
+    if (GetPlayer()->IsAlive() || !GetPlayer()->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+        return;
+
+    GetPlayer()->RepopAtGraveyard();
+}
+
 // 4.3.4: the client asks for the graveyards of the player's zone to show them on the world map
 void WorldSession::HandleRequestCemeteryList(WorldPacket& /*recvData*/)
 {

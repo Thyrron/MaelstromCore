@@ -889,6 +889,7 @@ void OpcodeTable::Initialize()
     /*0x7202*/ DEFINE_HANDLER(CMSG_QUERY_BATTLEFIELD_STATE,                                         STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
     /*0x4407*/ DEFINE_HANDLER(CMSG_QUEST_GIVER_STATUS_QUERY,                                   STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
     /*0x720A*/ DEFINE_HANDLER(CMSG_REQUEST_CEMETERY_LIST,                                           STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::HandleRequestCemeteryList                );
+    /*0x301E*/ DEFINE_HANDLER(CMSG_RETURN_TO_GRAVEYARD,                                             STATUS_LOGGEDIN,   PROCESS_THREADUNSAFE,   &WorldSession::HandleReturnToGraveyard                  );
     /*0x3D54*/ DEFINE_HANDLER(CMSG_UNREGISTER_ALL_ADDON_PREFIXES,                                   STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
     /*0x2401*/ DEFINE_HANDLER(CMSG_DB_QUERY_BULK,                                                   STATUS_AUTHED,     PROCESS_INPLACE,        &WorldSession::HandleDBQueryBulk                        );
     /*0x38A4*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_DB_REPLY,                                          STATUS_NEVER);

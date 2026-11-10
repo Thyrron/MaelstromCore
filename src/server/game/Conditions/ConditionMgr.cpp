@@ -18,6 +18,7 @@
 #include "ConditionMgr.h"
 #include "AchievementMgr.h"
 #include "GameEventMgr.h"
+#include "GameGraveyard.h"
 #include "GameObject.h"
 #include "GameObjectAI.h"
 #include "InstanceScript.h"
@@ -1605,8 +1606,13 @@ bool ConditionMgr::isSourceTypeValid(Condition* cond)
     {
     case CONDITION_SOURCE_TYPE_GRAVEYARD:
     {
-        LOG_ERROR("sql.sql", "ConditionSourceType {} in `condition` table is not supported on 3.3.5a, ignoring.", uint32(cond->SourceType));
-        return false;
+        // 4.3.4: a graveyard that serves only part of a zone's story (SourceEntry: game_graveyard ID)
+        if (!sGraveyard->GetGraveyard(cond->SourceEntry))
+        {
+            LOG_ERROR("sql.sql", "SourceType {} SourceEntry {} in `condition` table does not exist in `game_graveyard`, ignoring.", uint32(cond->SourceType), cond->SourceEntry);
+            return false;
+        }
+        break;
     }
     case CONDITION_SOURCE_TYPE_TERRAIN_SWAP:
     {
