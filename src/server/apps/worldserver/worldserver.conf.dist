@@ -100,6 +100,24 @@ RealmID = 1
 WorldServerPort = 8085
 
 #
+#    LegacyConnectionModeEnabled
+#        Description: Keep the whole game on the one world connection, as TrinityCore 4.3.4 does. The unmodified
+#                     4.3.4 client (the 32-bit Wow.exe) needs this; with 0 the server redirects it to a second
+#                     connection (InstanceServerPort) through a signed SMSG_CONNECT_TO that only a client patched
+#                     with the server's key accepts, and the unmodified client crashes at character login.
+#        Default:     1 - (One connection)
+#                     0 - (Second "instance" connection; patched clients only)
+
+LegacyConnectionModeEnabled = 1
+
+#
+#    InstanceServerPort
+#        Description: TCP port of the second world connection (only with LegacyConnectionModeEnabled = 0).
+#        Default:     8086
+
+InstanceServerPort = 8086
+
+#
 #    BindIP
 #        Description: Bind world server to IP/hostname
 #        Default:     "0.0.0.0" - (Bind to all IPs on the system)

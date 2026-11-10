@@ -179,10 +179,11 @@ void WorldConfig::BuildConfigCache()
     SetConfigValue<uint32>(CONFIG_INTERVAL_CHANGEWEATHER, "ChangeWeatherInterval", 600000);
 
     SetConfigValue<uint32>(CONFIG_PORT_WORLD, "WorldServerPort", 8085, ConfigValueCache::Reloadable::No);
-    // Build 15595 opens a second world connection after SMSG_CONNECT_TO (pinned TrinityCore-Cata).
+    // Build 15595 can open a second world connection after SMSG_CONNECT_TO (pinned TrinityCore-Cata).
     SetConfigValue<uint32>(CONFIG_PORT_INSTANCE, "InstanceServerPort", 8086, ConfigValueCache::Reloadable::No);
-    // 1 = one socket only, for clients patched to never open the instance connection.
-    SetConfigValue<bool>(CONFIG_LEGACY_CONNECTION_MODE, "LegacyConnectionModeEnabled", false, ConfigValueCache::Reloadable::No);
+    // 1 (default) = one socket only, as TrinityCore 4.3.4 runs: the unmodified 32-bit client works. 0 needs a client
+    // that trusts the server's SMSG_CONNECT_TO signature; the unmodified one crashes on it at character login.
+    SetConfigValue<bool>(CONFIG_LEGACY_CONNECTION_MODE, "LegacyConnectionModeEnabled", true, ConfigValueCache::Reloadable::No);
 
     SetConfigValue<uint32>(CONFIG_SOCKET_TIMEOUTTIME, "SocketTimeOutTime", 900000);
     SetConfigValue<uint32>(CONFIG_SOCKET_TIMEOUTTIME_ACTIVE, "SocketTimeOutTimeActive", 60000);
