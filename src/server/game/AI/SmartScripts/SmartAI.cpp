@@ -175,6 +175,15 @@ void SmartAI::GenerateWayPointArray(Movement::PointsArray* points)
     if (!mWayPoints || mWayPoints->Nodes.empty())
         return;
 
+    // A point on top of the one before it (paths repeat a point to wait or turn there) would make the spline invalid
+    // (_checkPathLengths) on every update; it is nudged 0.15 yards, so each spline point stays one waypoint
+    auto addPoint = [](std::vector<G3D::Vector3>& vector, G3D::Vector3 point)
+    {
+        if (!vector.empty() && (point - vector.back()).length() < 0.1f)
+            point.x += 0.15f;
+        vector.push_back(point);
+    };
+
     // Flying unit, just fill array
     if (me->m_movementInfo.HasMovementFlag((MovementFlags)(MOVEMENTFLAG_CAN_FLY | MOVEMENTFLAG_DISABLE_GRAVITY)))
     {
@@ -185,7 +194,7 @@ void SmartAI::GenerateWayPointArray(Movement::PointsArray* points)
         for (uint32 i = mCurrentWPID > 0 ? mCurrentWPID - 1 : 0; i < mWayPoints->Nodes.size(); ++i)
         {
             WaypointNode const& wp = mWayPoints->Nodes[i];
-            points->push_back(G3D::Vector3(wp.X, wp.Y, wp.Z));
+            addPoint(*points, G3D::Vector3(wp.X, wp.Y, wp.Z));
         }
     }
     else
@@ -203,7 +212,7 @@ void SmartAI::GenerateWayPointArray(Movement::PointsArray* points)
             for (uint32 i = startIdx; i < mWayPoints->Nodes.size() && cnt++ <= length; ++i)
             {
                 WaypointNode const& wp = mWayPoints->Nodes[i];
-                pVector.push_back(G3D::Vector3(wp.X, wp.Y, wp.Z));
+                addPoint(pVector, G3D::Vector3(wp.X, wp.Y, wp.Z));
             }
 
             if (pVector.size() > 2) // more than source + dest

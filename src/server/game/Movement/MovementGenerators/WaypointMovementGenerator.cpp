@@ -236,6 +236,17 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
         // Build a catmullrom spline segment, stopping at delay waypoints
         init.Path().push_back(PositionToVector3(creature->GetPosition()));
 
+        // A point on top of the one before it would make the spline invalid (_checkPathLengths): paths that repeat a
+        // point, or that close their loop by repeating the first point at the end, failed on every update. Such a
+        // point is nudged 0.15 yards instead of dropped: each spline point stays one waypoint node, as the node
+        // counting below relies on.
+        auto addSplinePoint = [&init](G3D::Vector3 point)
+        {
+            if ((point - init.Path().back()).length() < 0.1f)
+                point.x += 0.15f;
+            init.Path().push_back(point);
+        };
+
         bool hasDelayInSegment = false;
         uint32 segmentNodes = 0;
         for (uint32 i = 0; i < i_path->Nodes.size(); ++i)
@@ -244,7 +255,7 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
             WaypointNode const& node = i_path->Nodes.at(idx);
             float newZ = node.Z;
             creature->UpdateAllowedPositionZ(node.X, node.Y, newZ);
-            init.Path().push_back(G3D::Vector3(node.X, node.Y, newZ));
+            addSplinePoint(G3D::Vector3(node.X, node.Y, newZ));
             segmentNodes++;
 
             // Stop the segment at a waypoint with a delay
@@ -264,7 +275,7 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
                 WaypointNode const& node = i_path->Nodes.at(idx);
                 float newZ = node.Z;
                 creature->UpdateAllowedPositionZ(node.X, node.Y, newZ);
-                init.Path().push_back(G3D::Vector3(node.X, node.Y, newZ));
+                addSplinePoint(G3D::Vector3(node.X, node.Y, newZ));
             }
         }
 
@@ -301,15 +312,20 @@ void WaypointMovementGenerator<Creature>::StartMove(Creature* creature, bool rel
     }
     else
     {
+        // Paths repeat a point to turn or wait there: a creature already on its next point gets a plain two-point
+        // move, as path finding would return a zero-length segment that fails _checkPathLengths on every update
+        G3D::Vector3 const destination(waypoint.X, waypoint.Y, waypoint.Z);
+        bool const generatePath = (destination - PositionToVector3(creature->GetPosition())).length() >= 0.1f;
+
         // Smooth transition for short paths (<=2 nodes): use previous spline endpoint as start
         if (waypoint.SmoothTransition && !creature->movespline->Finalized() && _lastSplineId == creature->movespline->GetId())
         {
-            init.MoveTo(creature->movespline->FinalDestination(), G3D::Vector3(waypoint.X, waypoint.Y, waypoint.Z));
+            init.MoveTo(creature->movespline->FinalDestination(), destination, generatePath);
             if (!init.Path().empty())
                 init.Path().insert(init.Path().begin(), PositionToVector3(creature->GetPosition()));
         }
         else
-            init.MoveTo(PositionToVector3(creature->GetPosition()), G3D::Vector3(waypoint.X, waypoint.Y, waypoint.Z));
+            init.MoveTo(PositionToVector3(creature->GetPosition()), destination, generatePath);
     }
 
     if (waypoint.Orientation.has_value() && waypoint.Delay > 0)
