@@ -22,6 +22,7 @@
 #include "ModelInstance.h"
 #include "PathCommon.h"
 #include "VMapMgr2.h"
+#include <limits>
 #include <vector>
 #include <map>
 
@@ -493,8 +494,9 @@ namespace MMAP
                 // we use only one terrain kind per quad - pick higher one
                 if (useTerrain && useLiquid)
                 {
-                    float minLLevel = INVALID_MAP_LIQ_HEIGHT_MAX;
-                    float maxLLevel = INVALID_MAP_LIQ_HEIGHT;
+                    // the real extremes: terrain and liquid may lie below -500 (Vashj'ir)
+                    float minLLevel = std::numeric_limits<float>::max();
+                    float maxLLevel = std::numeric_limits<float>::lowest();
                     for (uint32 x = 0; x < 3; x++)
                     {
                         float h = lverts[ltris[x] * 3 + 1];
@@ -505,8 +507,8 @@ namespace MMAP
                             maxLLevel = h;
                     }
 
-                    float maxTLevel = INVALID_MAP_LIQ_HEIGHT;
-                    float minTLevel = INVALID_MAP_LIQ_HEIGHT_MAX;
+                    float maxTLevel = std::numeric_limits<float>::lowest();
+                    float minTLevel = std::numeric_limits<float>::max();
                     for (uint32 x = 0; x < 6; x++)
                     {
                         float h = tverts[ttris[x] * 3 + 1];

@@ -137,8 +137,9 @@ TEST(MMapTest, LoadsGeneratedTerrainSwapNavMeshAndFindsAPath)
     };
 
     // Known non-empty tiles; coordinates are world (x, y, z), converted to Detour's (y, z, x).
+    // 654 has 59 tiles with its terrain below -500 extracted (the sea floor around Gilneas); 50 when clamped.
     for (Case const& testCase : { Case{ 648, "648.mmap", 149, 2400.0f, 266.67f, 50.0f },
-                                  Case{ 654, "654.mmap", 50, -800.0f, 2400.0f, 50.0f } })
+                                  Case{ 654, "654.mmap", 59, -800.0f, 2400.0f, 50.0f } })
     {
         SCOPED_TRACE(testCase.MapId);
 

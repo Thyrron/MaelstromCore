@@ -98,11 +98,14 @@ enum Extract
 // Select data for extract
 int   CONF_extract = EXTRACT_MAP | EXTRACT_DBC | EXTRACT_CAMERA;
 // This option allow limit minimum height to some value (Allow save some memory)
-bool  CONF_allow_height_limit = true;
+// Off by default: 4.3.4 has real terrain far below -500 (Vashj'ir's Abyssal Depths reaches about -1800),
+// and a clamped grid is a flat false floor above it. CONF_use_minHeight also marks cells without liquid.
+bool  CONF_allow_height_limit = false;
 float CONF_use_minHeight = -500.0f;
 
 // This option allow use float to int conversion
-bool  CONF_allow_float_to_int   = true;
+// Off by default: the client's heights are stored exactly (int16 packing rounds by up to 2048/65536 yd).
+bool  CONF_allow_float_to_int   = false;
 float CONF_float_to_int8_limit  = 2.0f;      // Max accuracy = val/256
 float CONF_float_to_int16_limit = 2048.0f;   // Max accuracy = val/65536
 float CONF_flat_height_delta_limit = 0.005f; // If max - min less this value - surface is flat
@@ -168,8 +171,9 @@ void Usage(char* prg)
         "-i set input path\n"\
         "-o set output path\n"\
         "-e extract only MAP(1)/DBC(2)/Camera(4) - standard: all(7)\n"\
-        "-f height stored as int (less map size but lost some accuracy) 1 by default\n"\
-        "Example: %s -f 0 -i \"c:\\games\\game\"", prg, prg);
+        "-f height stored as int (less map size but lost some accuracy) 0 by default\n"\
+        "-h limit the minimum height to -500 (less map size, but deep terrain becomes a flat floor) 0 by default\n"\
+        "Example: %s -f 0 -h 0 -i \"c:\\games\\game\"", prg, prg);
     exit(1);
 }
 
@@ -215,6 +219,16 @@ void HandleArgs(int argc, char* arg[])
                 if (c + 1 < argc)                           // all ok
                 {
                     CONF_allow_float_to_int = atoi(arg[(c++) + 1]) != 0;
+                }
+                else
+                {
+                    Usage(arg[0]);
+                }
+                break;
+            case 'h':
+                if (c + 1 < argc)                           // all ok
+                {
+                    CONF_allow_height_limit = atoi(arg[(c++) + 1]) != 0;
                 }
                 else
                 {
