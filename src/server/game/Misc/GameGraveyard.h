@@ -61,6 +61,8 @@ public:
         uint32 areaId, uint32 zoneId, bool isDeathKnight);
     GraveyardData const* FindGraveyardData(uint32 id, uint32 zone);
     GraveyardContainer const& GetGraveyardData() const { return _graveyardStore; }
+    // The graveyards linked to a zone (graveyard_zone)
+    GraveyardMapBounds GetGraveyardLinks(uint32 zoneId) const { return GraveyardStore.equal_range(zoneId); }
     bool AddGraveyardLink(uint32 id, uint32 zoneId, TeamId teamId, bool persist = true);
     void RemoveGraveyardLink(uint32 id, uint32 zoneId, TeamId teamId, bool persist = false);
     void LoadGraveyardZones();

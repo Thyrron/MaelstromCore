@@ -26,6 +26,7 @@
 #include "Common.h"
 #include "DBCEnums.h"
 #include "DatabaseEnv.h"
+#include "GameGraveyard.h"
 #include "GameObjectAI.h"
 #include "GameTime.h"
 #include "GossipDef.h"
@@ -954,6 +955,27 @@ void WorldSession::HandleCompleteCinematic(WorldPacket& /*recv_data*/)
 {
     // End the current cinematic and restore the normal player view
     GetPlayer()->GetCinematicMgr().EndCinematic();
+}
+
+// 4.3.4: the client asks for the graveyards of the player's zone to show them on the world map
+void WorldSession::HandleRequestCemeteryList(WorldPacket& /*recvData*/)
+{
+    std::vector<uint32> graveyardIds;
+    GraveyardMapBounds bounds = sGraveyard->GetGraveyardLinks(_player->GetZoneId());
+    for (auto itr = bounds.first; itr != bounds.second && graveyardIds.size() < 16; ++itr) // the client takes 16
+        if (itr->second.IsNeutralOrFriendlyToTeam(_player->GetTeamId()))
+            graveyardIds.push_back(itr->second.safeLocId);
+
+    if (graveyardIds.empty())
+        return;
+
+    WorldPacket data(SMSG_REQUEST_CEMETERY_LIST_RESPONSE, 4 + 4 * graveyardIds.size());
+    data.WriteBit(false); // IsGossipTriggered
+    data.WriteBits(graveyardIds.size(), 24);
+    data.FlushBits();
+    for (uint32 id : graveyardIds)
+        data << uint32(id);
+    SendPacket(&data);
 }
 
 void WorldSession::HandleCompleteMovie(WorldPacket& /*recv_data*/)

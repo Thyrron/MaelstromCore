@@ -532,6 +532,7 @@ void OpcodeTable::Initialize()
     /*0x6207*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_SET_PROFICIENCY,                                    STATUS_NEVER);
     /*0x4335*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_SET_ANIM_TIER,                                      STATUS_NEVER);
     /*0x30A6*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_SET_PLAY_HOVER_ANIM,                                STATUS_NEVER);
+    /*0x30A7*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_REQUEST_CEMETERY_LIST_RESPONSE,                     STATUS_NEVER);
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_SETUP_CURRENCY,                                                STATUS_NEVER);
     /*0x59B0*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_SET_CURRENCY,                                       STATUS_NEVER);
     /*0x1DB4*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_CURRENCY_LOOT_REMOVED,                              STATUS_NEVER);
@@ -887,7 +888,7 @@ void OpcodeTable::Initialize()
     /*0x3808*/ DEFINE_HANDLER(CMSG_OBJECT_UPDATE_FAILED,                                            STATUS_LOGGEDIN,   PROCESS_THREADUNSAFE,   &WorldSession::HandleObjectUpdateFailedOpcode           );
     /*0x7202*/ DEFINE_HANDLER(CMSG_QUERY_BATTLEFIELD_STATE,                                         STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
     /*0x4407*/ DEFINE_HANDLER(CMSG_QUEST_GIVER_STATUS_QUERY,                                   STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
-    /*0x720A*/ DEFINE_HANDLER(CMSG_REQUEST_CEMETERY_LIST,                                           STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
+    /*0x720A*/ DEFINE_HANDLER(CMSG_REQUEST_CEMETERY_LIST,                                           STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::HandleRequestCemeteryList                );
     /*0x3D54*/ DEFINE_HANDLER(CMSG_UNREGISTER_ALL_ADDON_PREFIXES,                                   STATUS_LOGGEDIN,   PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
     /*0x2401*/ DEFINE_HANDLER(CMSG_DB_QUERY_BULK,                                                   STATUS_AUTHED,     PROCESS_INPLACE,        &WorldSession::HandleDBQueryBulk                        );
     /*0x38A4*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_DB_REPLY,                                          STATUS_NEVER);

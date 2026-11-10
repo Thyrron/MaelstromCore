@@ -1452,6 +1452,7 @@ enum OpcodeServer : uint16
     SMSG_RESUME_COMMS                               = 0x0140,
     SMSG_SET_ANIM_TIER                              = 0x4335,
     SMSG_SET_PLAY_HOVER_ANIM                        = 0x30A6,
+    SMSG_REQUEST_CEMETERY_LIST_RESPONSE             = 0x30A7,
 };
 
 inline constexpr OpcodeServer MSG_MOVE_START_FORWARD_SERVER =
