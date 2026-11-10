@@ -2494,19 +2494,22 @@ bool WorldObject::CanDetectInvisibilityOf(WorldObject const* obj) const
             }
         }
 
-        if (!isPermInvisibleCreature)
+        // Only ordinary invisibility (spell 66's type) blinds its bearer: 4.3.4's quest invisibilities hide a player from
+        // others and leave them seeing everything, e.g. Near Death! (69010, type 7) on the Lost Isles' beach
+        uint64 const blinding = m_invisibility.GetFlags() & (uint64(1) << INVISIBILITY_GENERAL);
+        if (!isPermInvisibleCreature && blinding)
         {
             uint64 objMask = m_invisibility.GetFlags() & obj->m_invisibilityDetect.GetFlags();
             // xinef: include invisible flags of caster in the mask, 2 invisible objects should be able to detect eachother
             objMask |= m_invisibility.GetFlags() & obj->m_invisibility.GetFlags();
-            if (objMask != m_invisibility.GetFlags())
+            if ((objMask & blinding) != blinding)
                 return false;
         }
     }
 
     for (uint32 i = 0; i < TOTAL_INVISIBILITY_TYPES; ++i)
     {
-        if (!(mask & (1 << i)))
+        if (!(mask & (uint64(1) << i)))
             continue;
 
         // xinef: visible for the same invisibility type:
