@@ -4935,6 +4935,14 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->Effects[EFFECT_0].TargetA = SpellImplicitTargetInfo(TARGET_UNIT_PASSENGER_0);
     });
 
+    // Miner Troubles: Ore Cart Chain (the Lost Isles): the ore cart keeps the Frightened Miner on a chain while both
+    // walk the cavern (retail sniff, as ShatterCore has it); as a channel it held whoever cast it still, so the miner
+    // stood at the cavern's mouth
+    ApplySpellFix({ 68122 }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->AttributesEx5 |= SPELL_ATTR5_ALLOW_ACTION_DURING_CHANNEL;
+    });
+
     for (uint32 i = 0; i < GetSpellInfoStoreSize(); ++i)
     {
         SpellInfo* spellInfo = mSpellInfoMap[i];

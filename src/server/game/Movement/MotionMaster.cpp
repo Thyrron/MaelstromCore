@@ -651,13 +651,17 @@ void MotionMaster::MoveKnockbackFrom(float srcX, float srcY, float speedXY, floa
     if (!allowClientControlled && _owner->IsPlayer() && _owner->IsClientControlled())
         return;
 
-    if (speedXY <= 0.1f)
+    if (speedZ <= 0.1f && speedXY <= 0.1f)
         return;
 
      Position dest = _owner->GetPosition();
     float moveTimeHalf = speedZ / Movement::gravity;
-    float dist = 2 * moveTimeHalf * speedXY;
     float max_height = -Movement::computeFallElevation(moveTimeHalf, false, -speedZ);
+    // A knockback straight up (no horizontal speed, e.g. Exploding Bananas, 67919: the Lost Isles' monkeys rocket up
+    // and fall back) was dropped; it flies a half-yard arc as long as its vertical speed keeps it up
+    bool const vertical = speedXY <= 0.1f;
+    float dist = vertical ? 0.5f : 2 * moveTimeHalf * speedXY;
+    float velocity = vertical ? dist / std::max(2 * moveTimeHalf, 0.1f) : speedXY;
 
     // Use a mmap raycast to get a valid destination.
     _owner->MovePositionToFirstCollision(dest, dist, _owner->GetRelativeAngle(srcX, srcY) + float(M_PI));
@@ -666,7 +670,7 @@ void MotionMaster::MoveKnockbackFrom(float srcX, float srcY, float speedXY, floa
     init.MoveTo(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
     init.SetParabolic(max_height, 0);
     init.SetOrientationFixed(true);
-    init.SetVelocity(speedXY);
+    init.SetVelocity(velocity);
 
     // Do not mutate an active fleeing/confused movement generator,
     // doing so breaks the movement upon landing from the knockback

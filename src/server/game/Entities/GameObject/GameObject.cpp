@@ -934,8 +934,11 @@ void GameObject::Update(uint32 diff)
                     //any return here in case battleground traps
                     // Xinef: Do not return here for summoned gos that should be deleted few lines below
                     // Xinef: Battleground objects are treated as spawned by default
+                    // A script that despawned it (DespawnOrUnsummon sets a respawn time) goes on to hide it until it
+                    // respawns: returning here kept it stuck deactivated, gone for the user, back on the next update
+                    // of their view, and unusable (the Lost Isles' escape pods)
                     if (GameObjectTemplateAddon const* addon = GetTemplateAddon())
-                        if ((addon->flags & GO_FLAG_NODESPAWN) && isSpawnedByDefault())
+                        if ((addon->flags & GO_FLAG_NODESPAWN) && isSpawnedByDefault() && !m_respawnTime)
                             return;
                 }
 
