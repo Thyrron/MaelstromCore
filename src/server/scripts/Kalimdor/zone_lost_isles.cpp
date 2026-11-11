@@ -617,6 +617,9 @@ enum PodSurvivor
     SAY_POD_SURVIVOR_FIRST          = 0,
     SAY_POD_SURVIVOR_LAST           = 6,
     NPC_POD_GALLYWIX                = 35649,
+
+    POINT_POD_SURVIVOR_SHORE        = 1,
+    POINT_POD_SURVIVOR_CAMP         = 2,
 };
 
 // How far under the water's surface a freed survivor swims
@@ -625,11 +628,6 @@ constexpr float POD_SURVIVOR_DEPTH = 1.0f;
 struct npc_lost_isles_pod_survivor : public ScriptedAI
 {
     npc_lost_isles_pod_survivor(Creature* creature) : ScriptedAI(creature) { }
-
-    void Reset() override
-    {
-        me->SetDisableGravity(true);
-    }
 
     void IsSummonedBy(WorldObject* summoner) override
     {
@@ -640,12 +638,27 @@ struct npc_lost_isles_pod_survivor : public ScriptedAI
             me->NearTeleportTo(me->GetPositionX(), me->GetPositionY(), waterZ - POD_SURVIVOR_DEPTH,
                 me->GetOrientation());
 
+        // A swimmer, not a flyer: without gravity and the swimming flag the client showed the swim pose in the air
+        me->SetSwim(true);
+
         if (Player* player = summoner ? summoner->ToPlayer() : nullptr)
         {
             DoCastSelf(SPELL_SWIM, true);
             _playerGUID = player->GetGUID();
             _events.ScheduleEvent(EVENT_POD_SURVIVOR_TALK, 2s);
         }
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        if (id == POINT_POD_SURVIVOR_SHORE)
+            me->GetMotionMaster()->MovePoint(POINT_POD_SURVIVOR_CAMP, 594.541f, 3135.034f, -0.905f,
+                FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false);
+        else if (id == POINT_POD_SURVIVOR_CAMP)
+            me->DespawnOrUnsummon(2s);
     }
 
     void UpdateAI(uint32 diff) override
@@ -668,9 +681,11 @@ struct npc_lost_isles_pod_survivor : public ScriptedAI
                     _events.ScheduleEvent(EVENT_POD_SURVIVOR_SWIM, 2s);
                     break;
                 case EVENT_POD_SURVIVOR_SWIM:
-                    me->GetMotionMaster()->MovePoint(1, 600.0f, 3125.0f, -1.0f, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
-                        false);
-                    _events.ScheduleEvent(EVENT_POD_SURVIVOR_DESPAWN, 7s);
+                    // The retail sniff's route (as ShatterCore has it): swim to the shore, then run up to the camp
+                    me->SetWalk(false);
+                    me->GetMotionMaster()->MovePoint(POINT_POD_SURVIVOR_SHORE, 571.281f, 3181.45f, -2.889f,
+                        FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false);
+                    _events.ScheduleEvent(EVENT_POD_SURVIVOR_DESPAWN, 30s); // failsafe
                     break;
                 case EVENT_POD_SURVIVOR_DESPAWN:
                     me->DespawnOrUnsummon();
@@ -834,7 +849,6 @@ enum BombThrowingMonkey
     EVENT_MONKEY_THROW_BOMB         = 1,
     EVENT_MONKEY_ROCKET,
     EVENT_MONKEY_FALL,
-    EVENT_MONKEY_DIE,
 
     SPELL_COSMETIC_THROW_BOMB       = 66142,
     SPELL_NITRO_POTASSIUM_BANANAS   = 67917,
@@ -848,8 +862,7 @@ struct npc_lost_isles_bomb_throwing_monkey : public ScriptedAI
     void Reset() override
     {
         _events.Reset();
-        me->RemoveAurasDueToSpell(SPELL_FEIGN_DEATH);
-        me->SetEmoteState(EMOTE_ONESHOT_NONE);
+        _eating = false;
         _events.ScheduleEvent(EVENT_MONKEY_THROW_BOMB, 30s, 45s);
     }
 
@@ -880,16 +893,13 @@ struct npc_lost_isles_bomb_throwing_monkey : public ScriptedAI
                     _events.ScheduleEvent(EVENT_MONKEY_THROW_BOMB, 30s, 45s);
                     break;
                 case EVENT_MONKEY_ROCKET:
+                    // Exploding Bananas knocks it straight up (75 upward): about 4 s up and 4 s down
                     DoCastSelf(SPELL_EXPLODING_BANANAS, true);
                     _events.ScheduleEvent(EVENT_MONKEY_FALL, 8s);
                     break;
                 case EVENT_MONKEY_FALL:
-                    me->SetEmoteState(EMOTE_STATE_SLEEP);
-                    _events.ScheduleEvent(EVENT_MONKEY_DIE, 2s);
-                    break;
-                case EVENT_MONKEY_DIE:
-                    me->AddAura(SPELL_FEIGN_DEATH, me);
-                    me->DespawnOrUnsummon(15s);
+                    // back on the ground, dead (retail); it respawns as its spawn does
+                    me->KillSelf();
                     break;
                 default:
                     break;
@@ -908,46 +918,40 @@ private:
 };
 
 /*######
-## 35769 Foreman Dampwick (the mine): Miner Troubles (14021) sends a frightened miner along
+## 35769 Foreman Dampwick (the mine): Miner Troubles (14021) gives the player a frightened miner to escort, through the
+## quest's own spells: accepting casts Quest Accept (68061), which puts the Frightened Miner Controller (68062) on the
+## player, which summons the miner as their companion (68059); "I need another miner" casts New Miner from Gossip
+## (68069); the reward spell, Quest Complete (68063), casts Despawn Frightened Miner (68060). The controller's end
+## (abandoned, completed, replaced) takes the miner, his ore cart and its chunks away. Capturing the Unknown (14031)
+## lets the player see the cave paintings.
 ######*/
 
 enum ForemanDampwickMine
 {
     SAY_DAMPWICK_MINER_TROUBLES     = 0,
     SAY_DAMPWICK_MINE_CLAIMED       = 1,
-    SPELL_FRIGHTENED_MINER_CONTROLLER = 68062, // triggers 68059, Summon Frightened Miner
-};
-
-struct npc_lost_isles_foreman_dampwick_mine : public ScriptedAI
-{
-    npc_lost_isles_foreman_dampwick_mine(Creature* creature) : ScriptedAI(creature) { }
-
-    void sGossipSelect(Player* player, uint32 sender, uint32 action) override
-    {
-        HandleLostIslesGossipSpell(player, sender, action);
-    }
-
-    void sQuestAccept(Player* player, Quest const* quest) override
-    {
-        if (quest->GetQuestId() != QUEST_MINER_TROUBLES)
-            return;
-
-        Talk(SAY_DAMPWICK_MINER_TROUBLES, player);
-        player->CastSpell(player, SPELL_FRIGHTENED_MINER_CONTROLLER, true);
-    }
-
-    void sQuestReward(Player* player, Quest const* quest, uint32 /*opt*/) override
-    {
-        if (quest->GetQuestId() != QUEST_MINER_TROUBLES)
-            return;
-
-        Talk(SAY_DAMPWICK_MINE_CLAIMED, player);
-        player->RemoveAurasDueToSpell(SPELL_FRIGHTENED_MINER_CONTROLLER);
-    }
+    NPC_FRIGHTENED_MINER_ESCORT     = 35813,
+    NPC_KAJAMITE_CHUNK              = 35818,
+    SPELL_DESPAWN_FRIGHTENED_MINER  = 68060,
+    SPELL_MINER_QUEST_ACCEPT        = 68061,
+    SPELL_FRIGHTENED_MINER_CONTROLLER = 68062,
+    SPELL_NEW_MINER_FROM_GOSSIP     = 68069,
+    SPELL_SEE_INVIS_AREA_MASTER     = 68920,
+    SPELL_SEE_INVIS_BUNNY_1         = 70661,
+    SPELL_SEE_INVIS_BUNNY_2         = 70678,
+    SPELL_SEE_INVIS_BUNNY_3         = 70680,
+    SPELL_SEE_INVIS_BUNNY_4         = 70681,
 };
 
 /*######
-## 35813 Frightened Miner: the escort through the kaja'mite mine (14021), which also offers Capturing the Unknown
+## 35813 Frightened Miner: Miner Troubles (14021), an escort. He walks the cavern on his own, from Kaja'mite Ore
+## (195622) to Kaja'mite Ore, mines each with a line from the client, and the ore counts when he reaches the far
+## chamber; the player keeps the monkeys off him. Route, stops, pauses and lines from the retail sniff as ShatterCore
+## has them (Mr-Scooty, 2026-07-15; broadcast texts 36102, 36014, 36013, 36010, 36018), less a stray point that
+## sent him down to the second ore and back before the first. He is the player's companion
+## (68059). His ore cart (Summon Ore Cart, 68064; Ore Cart Transform, 68065; vehicle 115) trails him on its chain (Ore
+## Cart Chain, 68122, which the cart channels on him), and each deposit he mines puts a Chunk of Kaja'mite (68072)
+## into the cart (68074). After a fight he tells his controller and goes on (68071).
 ######*/
 
 enum FrightenedMiner
@@ -955,45 +959,83 @@ enum FrightenedMiner
     EVENT_MINER_SUMMON_CART         = 1,
     EVENT_MINER_CHAIN_CART,
     EVENT_MINER_START,
-    EVENT_MINER_NEXT_STOP,
+    EVENT_MINER_NEXT_POINT,
+    EVENT_MINER_RUN_OFF,
+    EVENT_MINER_DESPAWN,
 
     NPC_ORE_CART                    = 35814,
     SPELL_SUMMON_ORE_CART           = 68064,
     SPELL_ORE_CART_TRANSFORM        = 68065,
+    SPELL_WHISPER_ON_COMBAT_RETURN  = 68071,
+    SPELL_SUMMON_KAJAMITE_CHUNK     = 68072,
+    SPELL_CHUNK_RIDE_ORE_CART       = 68074,
     SPELL_ORE_CART_CHAIN            = 68122,
-    SPELL_SEE_INVIS_AREA_MASTER     = 68920,
-    SPELL_SEE_INVIS_BUNNY_1         = 70661,
-    SPELL_SEE_INVIS_BUNNY_2         = 70678,
-    SPELL_SEE_INVIS_BUNNY_3         = 70680,
-    SPELL_SEE_INVIS_BUNNY_4         = 70681,
 
     SAY_MINER_START                 = 0,
     SAY_MINER_CAVE_PAINTINGS        = 1,
-    SAY_MINER_ALL_THE_WORK          = 2,
     SAY_MINER_ACCOUNTANT            = 3,
     SAY_MINER_DONE                  = 4,
+    SAY_MINER_JACKPOT               = 5,
+    SAY_MINER_MOVE_ON               = 6,
 
-    POINT_MINER_STOP                = 1,
+    POINT_MINER_RUN_OFF             = 100,
 };
 
-Position const MinerStartPos = { 492.4184f, 2976.321f, 8.040207f, 0.0f };
+struct MinerRoutePoint
+{
+    float X, Y, Z;
+    uint32 PauseMs; // mining there, when not 0
+    int8 Say;       // -1: none
+};
 
-// ArkCORE walked the miner along its own paths; he now stops at the four cave paintings of Capturing the Unknown
-std::array<uint32, 4> const MinerStops = { NPC_CAPTURING_BUNNY_1, NPC_CAPTURING_BUNNY_2, NPC_CAPTURING_BUNNY_3,
-    NPC_CAPTURING_BUNNY_4 };
+std::array<MinerRoutePoint, 25> const MinerRoute =
+{ {
+    { 506.80f, 2976.93f,  7.14f,     0, -1 },
+    { 516.90f, 2973.13f,  8.61f,     0, -1 },
+    { 528.69f, 2961.12f,  6.86f,     0, -1 },
+    { 538.82f, 2951.87f,  5.02f,     0, -1 },
+    { 548.12f, 2943.13f,  2.30f,  3000, SAY_MINER_CAVE_PAINTINGS },   // the cavern's mouth (a look, no mining)
+    { 557.69f, 2935.65f,  1.09f,     0, -1 },
+    { 565.62f, 2936.04f,  0.30f,     0, -1 },
+    { 572.24f, 2944.43f, -0.29f,     0, -1 },
+    { 579.50f, 2956.21f, -1.52f,     0, -1 },
+    { 587.78f, 2964.38f, -2.26f, 18000, SAY_MINER_ACCOUNTANT },       // the first ore
+    { 589.45f, 2939.09f, -7.32f,     0, -1 },
+    { 581.43f, 2923.87f, -6.39f,     0, -1 },
+    { 575.18f, 2905.77f, -7.21f, 15000, SAY_MINER_JACKPOT },          // the second
+    { 574.46f, 2890.24f, -7.65f,     0, -1 },
+    { 592.10f, 2876.20f, -6.64f,     0, -1 },
+    { 603.36f, 2865.64f, -6.54f,     0, -1 },
+    { 607.68f, 2857.41f, -7.00f, 12000, SAY_MINER_MOVE_ON },          // the third
+    { 620.28f, 2886.39f, -4.44f,     0, -1 },
+    { 628.28f, 2911.83f, -1.83f,     0, -1 },
+    { 635.80f, 2919.50f, -0.95f,     0, -1 },
+    { 647.74f, 2927.78f, -0.02f,     0, -1 },
+    { 658.50f, 2936.43f,  0.29f,     0, -1 },
+    { 666.17f, 2947.39f,  0.12f, 10000, -1 },                         // the fourth, in the far chamber
+    { 654.54f, 2974.84f,  1.53f,     0, -1 },
+    { 660.71f, 2962.35f,  0.96f,     0, -1 },                         // the end: the ore is mined
+} };
+
+std::array<Position, 5> const MinerRunOff =
+{ {
+    { 654.05f, 2934.90f,  0.10f },
+    { 632.76f, 2920.28f, -1.30f },
+    { 622.06f, 2898.40f, -3.63f },
+    { 613.32f, 2877.02f, -6.60f },
+    { 603.03f, 2870.68f, -6.60f },
+} };
 
 struct npc_lost_isles_frightened_miner : public ScriptedAI
 {
     npc_lost_isles_frightened_miner(Creature* creature) : ScriptedAI(creature) { }
 
-    void Reset() override
+    void IsSummonedBy(WorldObject* summoner) override
     {
-        _events.Reset();
-        _stop = 0;
-        _playerGUID = me->GetOwnerGUID();
+        _playerGUID = summoner ? summoner->GetGUID() : ObjectGuid::Empty;
+        _point = 0;
         me->SetWalk(true);
-        me->GetMotionMaster()->MovePoint(0, MinerStartPos);
-        _events.ScheduleEvent(EVENT_MINER_SUMMON_CART, 3s);
+        _events.ScheduleEvent(EVENT_MINER_SUMMON_CART, 1s);
     }
 
     void JustSummoned(Creature* summon) override
@@ -1008,32 +1050,66 @@ struct npc_lost_isles_frightened_miner : public ScriptedAI
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        if (type != POINT_MOTION_TYPE || id != POINT_MINER_STOP)
+        if (type != POINT_MOTION_TYPE)
             return;
 
-        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
-        if (_stop == 1 && player)
+        if (id >= POINT_MINER_RUN_OFF)
         {
-            // The first painting: Dampwick's second job
-            if (player->GetQuestStatus(QUEST_CAPTURING_THE_UNKNOWN) == QUEST_STATUS_NONE
-                && !player->IsQuestRewarded(QUEST_CAPTURING_THE_UNKNOWN))
-                if (Quest const* quest = sObjectMgr->GetQuestTemplate(QUEST_CAPTURING_THE_UNKNOWN))
-                    if (player->CanAddQuest(quest, true))
-                    {
-                        Creature* dampwick = me->FindNearestCreature(NPC_FOREMAN_DAMPWICK, 200.0f);
-                        player->AddQuestAndCheckCompletion(quest, dampwick ? static_cast<Object*>(dampwick) : me);
-                    }
-            for (uint32 spellId : { SPELL_SEE_INVIS_AREA_MASTER, SPELL_SEE_INVIS_BUNNY_1, SPELL_SEE_INVIS_BUNNY_2,
-                                    SPELL_SEE_INVIS_BUNNY_3, SPELL_SEE_INVIS_BUNNY_4 })
-                player->CastSpell(player, spellId, true);
-            Talk(SAY_MINER_CAVE_PAINTINGS, player);
+            uint32 const next = id - POINT_MINER_RUN_OFF + 1;
+            if (next < MinerRunOff.size())
+                me->GetMotionMaster()->MovePoint(POINT_MINER_RUN_OFF + next, MinerRunOff[next]);
+            else
+                me->DespawnOrUnsummon(200ms);
+            return;
         }
 
-        me->SetEmoteState(EMOTE_STATE_WORK_MINING);
-        _events.ScheduleEvent(EVENT_MINER_NEXT_STOP, _stop == 1 ? 10s : 5s);
+        if (id != _point || id >= MinerRoute.size())
+            return;
+
+        _walking = false;
+
+        MinerRoutePoint const& point = MinerRoute[id];
+        Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
+        if (point.Say >= 0 && player)
+            Talk(uint8(point.Say), player);
+
+        if (id + 1 == MinerRoute.size())
+        {
+            if (player)
+            {
+                Talk(SAY_MINER_DONE, player);
+                player->KilledMonsterCredit(NPC_MINER_TROUBLES_CREDIT);
+            }
+            _events.ScheduleEvent(EVENT_MINER_RUN_OFF, 6s);
+            return;
+        }
+
+        if (point.PauseMs && point.Say != SAY_MINER_CAVE_PAINTINGS)
+            me->SetEmoteState(EMOTE_STATE_WORK_MINING);
+        _events.ScheduleEvent(EVENT_MINER_NEXT_POINT, Milliseconds(500 + point.PauseMs));
     }
 
-    void EnterEvadeMode(EvadeReason /*why*/) override { }
+    void JustEngagedWith(Unit* /*who*/) override
+    {
+        me->SetEmoteState(EMOTE_ONESHOT_NONE);
+    }
+
+    // The fight over, he does not walk home: he tells his controller and takes up his leg, or his mining
+    void EnterEvadeMode(EvadeReason /*why*/) override
+    {
+        me->CombatStop(true);
+        DoCastSelf(SPELL_WHISPER_ON_COMBAT_RETURN, true);
+        if (_walking)
+            MoveTo(_point);
+        else
+        {
+            me->GetMotionMaster()->Clear();
+            me->GetMotionMaster()->MoveIdle();
+            MinerRoutePoint const& point = MinerRoute[_point];
+            if (point.PauseMs && point.Say != SAY_MINER_CAVE_PAINTINGS)
+                me->SetEmoteState(EMOTE_STATE_WORK_MINING);
+        }
+    }
 
     void UpdateAI(uint32 diff) override
     {
@@ -1044,6 +1120,10 @@ struct npc_lost_isles_frightened_miner : public ScriptedAI
             switch (eventId)
             {
                 case EVENT_MINER_SUMMON_CART:
+                    // An escort: the monkeys can hurt him (the core makes a companion immune to all after its summon),
+                    // and he fights back what attacks him, with the player's help
+                    me->SetImmuneToAll(false);
+                    me->SetReactState(REACT_DEFENSIVE);
                     DoCastSelf(SPELL_SUMMON_ORE_CART, true);
                     _events.ScheduleEvent(EVENT_MINER_CHAIN_CART, 100ms);
                     break;
@@ -1051,77 +1131,349 @@ struct npc_lost_isles_frightened_miner : public ScriptedAI
                     if (Creature* cart = ObjectAccessor::GetCreature(*me, _cartGUID))
                     {
                         cart->CastSpell(cart, SPELL_ORE_CART_TRANSFORM, true);
-                        DoCast(cart, SPELL_ORE_CART_CHAIN, true);
+                        cart->CastSpell(me, SPELL_ORE_CART_CHAIN, true);
                     }
-                    _events.ScheduleEvent(EVENT_MINER_START, 100ms);
+                    // retail sets off some ten seconds after the miner appears
+                    _events.ScheduleEvent(EVENT_MINER_START, 8s);
                     break;
                 case EVENT_MINER_START:
                     if (Creature* cart = ObjectAccessor::GetCreature(*me, _cartGUID))
-                        cart->GetMotionMaster()->MoveFollow(me, 1.5f, float(M_PI));
+                        cart->GetMotionMaster()->MoveFollow(me, 2.0f, float(M_PI));
                     if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
                         Talk(SAY_MINER_START, player);
-                    MoveToNextStop();
+                    MoveTo(0);
                     break;
-                case EVENT_MINER_NEXT_STOP:
+                case EVENT_MINER_NEXT_POINT:
                 {
-                    me->SetEmoteState(EMOTE_ONESHOT_NONE);
-                    Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
-                    if (_stop < MinerStops.size())
+                    // not while he fights
+                    if (me->IsInCombat())
                     {
-                        if (player)
-                            Talk(_stop == 2 ? SAY_MINER_ACCOUNTANT : SAY_MINER_ALL_THE_WORK, player);
-                        MoveToNextStop();
+                        _events.ScheduleEvent(EVENT_MINER_NEXT_POINT, 1s);
                         break;
                     }
-                    if (player)
-                    {
-                        Talk(SAY_MINER_DONE, player);
-                        player->KilledMonsterCredit(NPC_MINER_TROUBLES_CREDIT);
-                    }
-                    me->GetMotionMaster()->MovePoint(0, MinerStartPos);
-                    me->DespawnOrUnsummon(10s);
+                    me->SetEmoteState(EMOTE_ONESHOT_NONE);
+                    // a deposit mined: its chunk goes into the cart
+                    MinerRoutePoint const& mined = MinerRoute[_point];
+                    if (mined.PauseMs && mined.Say != SAY_MINER_CAVE_PAINTINGS)
+                        DoCastSelf(SPELL_SUMMON_KAJAMITE_CHUNK, true);
+                    MoveTo(_point + 1);
                     break;
                 }
+                case EVENT_MINER_RUN_OFF:
+                    me->SetEmoteState(EMOTE_ONESHOT_NONE);
+                    me->CombatStop(true);
+                    me->SetWalk(false);
+                    me->GetMotionMaster()->MovePoint(POINT_MINER_RUN_OFF, MinerRunOff[0]);
+                    _events.ScheduleEvent(EVENT_MINER_DESPAWN, 25s); // failsafe
+                    break;
+                case EVENT_MINER_DESPAWN:
+                    me->DespawnOrUnsummon();
+                    break;
                 default:
                     break;
             }
         }
+
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        if (Creature* cart = ObjectAccessor::GetCreature(*me, _cartGUID))
+            cart->DespawnOrUnsummon(1200ms);
     }
 
 private:
-    void MoveToNextStop()
+    void MoveTo(uint32 index)
     {
-        Creature* bunny = me->FindNearestCreature(MinerStops[_stop], 250.0f);
-        ++_stop;
-        if (bunny)
-            me->GetMotionMaster()->MovePoint(POINT_MINER_STOP, bunny->GetPosition());
-        else
-            _events.ScheduleEvent(EVENT_MINER_NEXT_STOP, 1s);
+        _point = index;
+        _walking = true;
+        MinerRoutePoint const& point = MinerRoute[index];
+        me->GetMotionMaster()->Clear();
+        me->GetMotionMaster()->MovePoint(index, point.X, point.Y, point.Z);
     }
 
     EventMap _events;
     ObjectGuid _playerGUID;
     ObjectGuid _cartGUID;
-    uint8 _stop = 0;
+    uint32 _point = 0;
+    bool _walking = false;
+};
+
+// The player's escorted miner, his ore cart and its chunks go (the controller's end: abandoned, completed, replaced)
+void DespawnFrightenedMiner(Player* player)
+{
+    std::list<Creature*> miners;
+    player->GetCreatureListWithEntryInGrid(miners, NPC_FRIGHTENED_MINER_ESCORT, 500.0f);
+    for (Creature* miner : miners)
+    {
+        TempSummon* summon = miner->ToTempSummon();
+        if (!summon || summon->GetSummonerGUID() != player->GetGUID())
+            continue;
+
+        for (uint32 entry : { uint32(NPC_KAJAMITE_CHUNK), uint32(NPC_ORE_CART) })
+        {
+            std::list<Creature*> things;
+            miner->GetCreatureListWithEntryInGrid(things, entry, 60.0f);
+            for (Creature* thing : things)
+                if (TempSummon* thingSummon = thing->ToTempSummon())
+                    if (thingSummon->GetSummonerGUID() == miner->GetGUID())
+                        thing->DespawnOrUnsummon();
+        }
+        miner->DespawnOrUnsummon();
+    }
+}
+
+struct npc_lost_isles_foreman_dampwick_mine : public ScriptedAI
+{
+    npc_lost_isles_foreman_dampwick_mine(Creature* creature) : ScriptedAI(creature) { }
+
+    void sGossipSelect(Player* player, uint32 sender, uint32 action) override
+    {
+        HandleLostIslesGossipSpell(player, sender, action);
+    }
+
+    void sQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() == QUEST_CAPTURING_THE_UNKNOWN)
+        {
+            // The camera markers show only to those who are to photograph them
+            player->CastSpell(player, SPELL_SEE_INVIS_AREA_MASTER, true);
+            return;
+        }
+
+        if (quest->GetQuestId() != QUEST_MINER_TROUBLES)
+            return;
+
+        Talk(SAY_DAMPWICK_MINER_TROUBLES, player);
+        player->CastSpell(player, SPELL_MINER_QUEST_ACCEPT, true);
+    }
+
+    void sQuestReward(Player* player, Quest const* quest, uint32 /*opt*/) override
+    {
+        if (quest->GetQuestId() != QUEST_MINER_TROUBLES)
+            return;
+
+        Talk(SAY_DAMPWICK_MINE_CLAIMED, player);
+    }
+};
+
+// 68061 Miner Troubles: Quest Accept: a fresh start; its force cast then gives the controller, which brings the miner
+class spell_lost_isles_miner_quest_accept : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_miner_quest_accept);
+
+    void HandleBefore()
+    {
+        if (Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr)
+            player->RemoveAurasDueToSpell(SPELL_FRIGHTENED_MINER_CONTROLLER);
+    }
+
+    void Register() override
+    {
+        BeforeCast += SpellCastFn(spell_lost_isles_miner_quest_accept::HandleBefore);
+    }
+};
+
+// 68062 Miner Troubles: Frightened Miner Controller Aura: its end takes the miner away
+class spell_lost_isles_frightened_miner_controller : public AuraScript
+{
+    PrepareAuraScript(spell_lost_isles_frightened_miner_controller);
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* player = GetTarget()->ToPlayer())
+            DespawnFrightenedMiner(player);
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(spell_lost_isles_frightened_miner_controller::HandleRemove, EFFECT_0,
+            SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 68060 Miner Troubles: Despawn Frightened Miner (from Quest Complete, 68063, the quest's reward spell)
+class spell_lost_isles_despawn_frightened_miner : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_despawn_frightened_miner);
+
+    void HandleAfter()
+    {
+        if (Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr)
+        {
+            player->RemoveAurasDueToSpell(SPELL_FRIGHTENED_MINER_CONTROLLER);
+            DespawnFrightenedMiner(player);
+        }
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_lost_isles_despawn_frightened_miner::HandleAfter);
+    }
+};
+
+// 68069 Miner Troubles: New Miner from Gossip ("Er, Dampwick, I need another miner...."): a new miner from the start
+class spell_lost_isles_new_miner_from_gossip : public AuraScript
+{
+    PrepareAuraScript(spell_lost_isles_new_miner_from_gossip);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player)
+            return;
+
+        player->RemoveAurasDueToSpell(SPELL_FRIGHTENED_MINER_CONTROLLER);
+        if (player->GetQuestStatus(QUEST_MINER_TROUBLES) == QUEST_STATUS_INCOMPLETE)
+            player->CastSpell(player, SPELL_FRIGHTENED_MINER_CONTROLLER, true);
+        Remove();
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_lost_isles_new_miner_from_gossip::HandleApply, EFFECT_0,
+            SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+class player_lost_isles_miner_troubles : public PlayerScript
+{
+public:
+    player_lost_isles_miner_troubles() : PlayerScript("player_lost_isles_miner_troubles",
+        { PLAYERHOOK_ON_QUEST_ABANDON }) { }
+
+    void OnPlayerQuestAbandon(Player* player, uint32 questId) override
+    {
+        if (questId == QUEST_MINER_TROUBLES)
+        {
+            player->RemoveAurasDueToSpell(SPELL_FRIGHTENED_MINER_CONTROLLER);
+            DespawnFrightenedMiner(player);
+        }
+    }
 };
 
 /*######
-## 37872, 37895, 37896, 37897 Capturing the Unknown bunnies: the cave paintings the KTC Snapflash photographs (14031)
+## 35818 Chunk of Kaja'mite: the miner's find (68072) climbs into his ore cart (68074)
+######*/
+
+struct npc_lost_isles_kajamite_chunk : public ScriptedAI
+{
+    npc_lost_isles_kajamite_chunk(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(WorldObject* /*summoner*/) override
+    {
+        me->SetReactState(REACT_PASSIVE);
+        DoCastSelf(SPELL_CHUNK_RIDE_ORE_CART, true);
+    }
+
+    void UpdateAI(uint32 /*diff*/) override { }
+};
+
+// 68074 Miner Troubles: Chunk of Kaja'mite Ride Ore Cart on Spawn: into a free seat of the cart of the miner who found it
+class spell_lost_isles_chunk_ride_ore_cart : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_chunk_ride_ore_cart);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Creature* chunk = GetCaster() ? GetCaster()->ToCreature() : nullptr;
+        TempSummon* summon = chunk ? chunk->ToTempSummon() : nullptr;
+        if (!summon)
+            return;
+
+        std::list<Creature*> carts;
+        chunk->GetCreatureListWithEntryInGrid(carts, NPC_ORE_CART, 30.0f);
+        for (Creature* cart : carts)
+        {
+            TempSummon* cartSummon = cart->ToTempSummon();
+            if (!cartSummon || cartSummon->GetSummonerGUID() != summon->GetSummonerGUID())
+                continue;
+            if (Vehicle* kit = cart->GetVehicleKit())
+                if (kit->GetAvailableSeatCount())
+                {
+                    chunk->EnterVehicle(cart);
+                    return;
+                }
+        }
+        // a full cart: the chunk lies by it a while
+        chunk->DespawnOrUnsummon(30s);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_lost_isles_chunk_ride_ore_cart::HandleScript, EFFECT_0,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+/*######
+## 37872, 37895, 37896, 37897 Capturing the Unknown (14031): the three cave paintings and the pygmy altar the KTC
+## Snapflash photographs, by the quest's own spells. Each marker is invisible to all but those who are still to
+## photograph it (Invis & State Visual 68231/70686/70687/70688 on the marker, the bobbing camera; See Invis Target Bunny
+## 70661/70678/70680/70681 on the player, given by See Invis Area Master 68920 while the quest is under way for each one
+## not yet captured). The Snapflash (68280) finds the marker near the player, which has them cast the photo (AICast to
+## Player 68279 -> 68281); the player then sees the painting from the camera's spot, an ELM bunny facing it (Player's
+## Bind Sight 70641, Player's Screen Effect 70649), the flash (KTC Snapflash Effect 68296) captures it and the marker
+## takes that player's sight of it away (Remove See Invis 68349/68936/68943/68937).
 ######*/
 
 enum CapturingTheUnknown
 {
-    EVENT_CAPTURE_BIND_SIGHT        = 1,
-    EVENT_CAPTURE_CREDIT,
-    EVENT_CAPTURE_RESET,
+    EVENT_CAPTURE_FLASH             = 1,
+    EVENT_CAPTURE_END,
 
     SPELL_KTC_SNAPFLASH             = 68281,
     SPELL_KTC_SNAPFLASH_EFFECT      = 68296,
     SPELL_CAPTURE_AICAST_TO_PLAYER  = 68279,
     SPELL_PLAYERS_BIND_SIGHT        = 70641,
     SPELL_PLAYERS_SCREEN_EFFECT     = 70649,
-    SPELL_REMOVE_SEE_INVIS_2        = 68936,
 };
+
+struct CapturingMarker
+{
+    uint32 Entry;
+    uint32 SeeInvis;    // the player's sight of it
+    uint32 RemoveSight; // the marker's spell that takes the sight away
+};
+
+std::array<CapturingMarker, 4> const CapturingMarkers =
+{ {
+    { NPC_CAPTURING_BUNNY_1, SPELL_SEE_INVIS_BUNNY_1, 68349 },
+    { NPC_CAPTURING_BUNNY_2, SPELL_SEE_INVIS_BUNNY_2, 68936 },
+    { NPC_CAPTURING_BUNNY_3, SPELL_SEE_INVIS_BUNNY_3, 68943 },
+    { NPC_CAPTURING_BUNNY_4, SPELL_SEE_INVIS_BUNNY_4, 68937 },
+} };
+
+bool IsCapturingMarkerDone(Player* player, uint32 entry)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(QUEST_CAPTURING_THE_UNKNOWN);
+    if (!quest)
+        return true;
+
+    uint16 const slot = player->FindQuestSlot(QUEST_CAPTURING_THE_UNKNOWN);
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        if (quest->RequiredNpcOrGo[i] == int32(entry))
+            return slot >= MAX_QUEST_LOG_SIZE || player->GetQuestSlotCounter(slot, i) >= quest->RequiredNpcOrGoCount[i];
+    return true;
+}
+
+// The player sees exactly the markers they are still to photograph: none outside the quest
+void SyncCapturingSight(Player* player)
+{
+    bool const underWay = player->GetQuestStatus(QUEST_CAPTURING_THE_UNKNOWN) == QUEST_STATUS_INCOMPLETE;
+    for (CapturingMarker const& marker : CapturingMarkers)
+    {
+        bool const see = underWay && !IsCapturingMarkerDone(player, marker.Entry);
+        if (see && !player->HasAura(marker.SeeInvis))
+            player->CastSpell(player, marker.SeeInvis, true);
+        else if (!see)
+            player->RemoveAurasDueToSpell(marker.SeeInvis);
+    }
+}
 
 struct npc_lost_isles_capturing_bunny : public ScriptedAI
 {
@@ -1130,48 +1482,20 @@ struct npc_lost_isles_capturing_bunny : public ScriptedAI
     void SpellHit(Unit* caster, SpellInfo const* spell) override
     {
         Player* player = caster ? caster->ToPlayer() : nullptr;
-        if (_playerGUID.IsEmpty() && player)
-            _playerGUID = player->GetGUID();
-        player = ObjectAccessor::GetPlayer(*me, _playerGUID);
-        if (!player)
+        if (!player || spell->Id != SPELL_KTC_SNAPFLASH || !_playerGUID.IsEmpty())
             return;
 
-        if (_bunnyGUID.IsEmpty())
-            if (Creature* bunny = me->FindNearestCreature(NPC_ELM_GENERAL_PURPOSE_BUNNY, 10.0f))
-                _bunnyGUID = bunny->GetGUID();
-
-        switch (spell->Id)
+        // the photo: the player looks at the painting from the camera's spot
+        _playerGUID = player->GetGUID();
+        // Its own target is the nearest creature of an entry it is not told: the aura goes straight onto the camera
+        // (the ELM bunny facing the painting), the player's, which moves their view there
+        if (Creature* camera = me->FindNearestCreature(NPC_ELM_GENERAL_PURPOSE_BUNNY, 10.0f))
         {
-            case SPELL_KTC_SNAPFLASH:
-                _events.ScheduleEvent(EVENT_CAPTURE_BIND_SIGHT, 200ms);
-                _events.RescheduleEvent(EVENT_CAPTURE_RESET, 5s);
-                DoCast(player, SPELL_CAPTURE_AICAST_TO_PLAYER, true);
-                if (Creature* bunny = ObjectAccessor::GetCreature(*me, _bunnyGUID))
-                    player->CastSpell(bunny, SPELL_PLAYERS_BIND_SIGHT, true);
-                break;
-            case SPELL_KTC_SNAPFLASH_EFFECT:
-                switch (me->GetEntry())
-                {
-                    case NPC_CAPTURING_BUNNY_1:
-                        player->RemoveAurasDueToSpell(SPELL_SEE_INVIS_BUNNY_1);
-                        break;
-                    case NPC_CAPTURING_BUNNY_2:
-                        player->RemoveAurasDueToSpell(SPELL_SEE_INVIS_BUNNY_2);
-                        break;
-                    case NPC_CAPTURING_BUNNY_3:
-                        player->RemoveAurasDueToSpell(SPELL_SEE_INVIS_BUNNY_3);
-                        break;
-                    case NPC_CAPTURING_BUNNY_4:
-                        player->RemoveAurasDueToSpell(SPELL_SEE_INVIS_BUNNY_4);
-                        break;
-                    default:
-                        break;
-                }
-                _events.ScheduleEvent(EVENT_CAPTURE_CREDIT, 2s);
-                break;
-            default:
-                break;
+            _cameraGUID = camera->GetGUID();
+            player->AddAura(SPELL_PLAYERS_BIND_SIGHT, camera);
         }
+        player->CastSpell(player, SPELL_PLAYERS_SCREEN_EFFECT, true);
+        _events.ScheduleEvent(EVENT_CAPTURE_FLASH, 2s);
     }
 
     void UpdateAI(uint32 diff) override
@@ -1183,25 +1507,29 @@ struct npc_lost_isles_capturing_bunny : public ScriptedAI
             Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID);
             switch (eventId)
             {
-                case EVENT_CAPTURE_BIND_SIGHT:
+                case EVENT_CAPTURE_FLASH:
                     if (player)
                     {
-                        player->CastSpell(player, SPELL_PLAYERS_BIND_SIGHT, true);
-                        player->CastSpell(player, SPELL_PLAYERS_SCREEN_EFFECT, true);
-                    }
-                    break;
-                case EVENT_CAPTURE_CREDIT:
-                    if (player)
-                    {
-                        DoCast(player, SPELL_REMOVE_SEE_INVIS_2, true);
+                        // the flash, and it is captured: the marker leaves this player's sight
+                        player->CastSpell(me, SPELL_KTC_SNAPFLASH_EFFECT, true);
                         player->KilledMonsterCredit(me->GetEntry());
+                        for (CapturingMarker const& marker : CapturingMarkers)
+                            if (marker.Entry == me->GetEntry())
+                                DoCast(player, marker.RemoveSight, true);
                     }
-                    _events.CancelEvent(EVENT_CAPTURE_RESET);
-                    [[fallthrough]];
-                case EVENT_CAPTURE_RESET:
+                    _events.ScheduleEvent(EVENT_CAPTURE_END, 2s);
+                    break;
+                case EVENT_CAPTURE_END:
+                    if (Creature* camera = ObjectAccessor::GetCreature(*me, _cameraGUID))
+                        camera->RemoveAurasDueToSpell(SPELL_PLAYERS_BIND_SIGHT, _playerGUID);
                     if (player)
+                    {
                         player->RemoveAurasDueToSpell(SPELL_PLAYERS_SCREEN_EFFECT);
+                        SyncCapturingSight(player);
+                    }
+                    me->RemoveAurasDueToSpell(SPELL_KTC_SNAPFLASH);
                     _playerGUID.Clear();
+                    _cameraGUID.Clear();
                     break;
                 default:
                     break;
@@ -1212,7 +1540,115 @@ struct npc_lost_isles_capturing_bunny : public ScriptedAI
 private:
     EventMap _events;
     ObjectGuid _playerGUID;
-    ObjectGuid _bunnyGUID;
+    ObjectGuid _cameraGUID;
+};
+
+// 68280 KTC Snapflash (the item's spell): it finds a marker near the player (conditions on the four), which turns to the
+// player (68279) to have the photo taken, if that one is still to be captured
+class spell_lost_isles_ktc_snapflash : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_ktc_snapflash);
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        Creature* marker = GetHitCreature();
+        if (!player || !marker || player->GetQuestStatus(QUEST_CAPTURING_THE_UNKNOWN) != QUEST_STATUS_INCOMPLETE
+            || IsCapturingMarkerDone(player, marker->GetEntry()))
+            return;
+
+        marker->CastSpell(player, SPELL_CAPTURE_AICAST_TO_PLAYER, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_ktc_snapflash::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 68279 Capturing The Unknown: AICast to Player: the player takes the photo of the marker that cast it (68281)
+class spell_lost_isles_capturing_aicast : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_capturing_aicast);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        Player* player = GetHitUnit() ? GetHitUnit()->ToPlayer() : nullptr;
+        Unit* marker = GetCaster();
+        if (player && marker)
+            player->CastSpell(marker, SPELL_KTC_SNAPFLASH, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_lost_isles_capturing_aicast::HandleScript, EFFECT_0,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 68920 Capturing The Unknown: See Invis Area Master: the sight of the markers still to be captured
+class spell_lost_isles_capturing_sight : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_capturing_sight);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        if (Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr)
+            SyncCapturingSight(player);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_lost_isles_capturing_sight::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 68349, 68936, 68943, 68937 Capturing The Unknown: Remove See Invis 1-4: the captured marker leaves the player's sight
+class spell_lost_isles_capturing_remove_sight : public AuraScript
+{
+    PrepareAuraScript(spell_lost_isles_capturing_remove_sight);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        for (CapturingMarker const& marker : CapturingMarkers)
+            if (marker.RemoveSight == GetId())
+                GetTarget()->RemoveAurasDueToSpell(marker.SeeInvis);
+        Remove();
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_lost_isles_capturing_remove_sight::HandleApply, EFFECT_0,
+            SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// The sight follows the quest: at login, when its objectives are done and when it is abandoned
+class player_lost_isles_capturing_the_unknown : public PlayerScript
+{
+public:
+    player_lost_isles_capturing_the_unknown() : PlayerScript("player_lost_isles_capturing_the_unknown",
+        { PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_QUEST_ABANDON }) { }
+
+    void OnPlayerLogin(Player* player) override
+    {
+        SyncCapturingSight(player);
+    }
+
+    void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() == QUEST_CAPTURING_THE_UNKNOWN)
+            SyncCapturingSight(player);
+    }
+
+    void OnPlayerQuestAbandon(Player* player, uint32 questId) override
+    {
+        if (questId != QUEST_CAPTURING_THE_UNKNOWN)
+            return;
+
+        for (CapturingMarker const& marker : CapturingMarkers)
+            player->RemoveAurasDueToSpell(marker.SeeInvis);
+    }
 };
 
 /*######
@@ -1266,11 +1702,16 @@ enum ValeFight
 {
     EVENT_VALE_SHOW_FIGHT           = 1,
     EVENT_VALE_PLAYER_COOLDOWN,
+    EVENT_PLANT_THORNS,
+    EVENT_PLANT_POISON_SPIT,
+    EVENT_PLANT_FROSTBOLT,
 
     SPELL_ORC_SHOOT                 = 15620,
     SPELL_POISON_SPIT               = 68207,
     SPELL_SHOOT_THORNS              = 68208,
     SPELL_FREEZYA_FROSTBOLT         = 68209,
+    SPELL_PLANT_BURST               = 68226,
+    SPELL_PLANT_BURST_CONTROLLER    = 68227,
     SPELL_WEED_WHACKER              = 68212,
     SPELL_WEED_WHACKER_BUFF         = 68824,
 
@@ -1294,12 +1735,19 @@ struct npc_lost_isles_vale_orc : public ScriptedAI
 {
     npc_lost_isles_vale_orc(Creature* creature) : ScriptedAI(creature) { }
 
+    // The camp holds the vale against the plants: Kilag keeps his rifle up and shoots at them, his scouts stand by him
+    // ready to fight; no one is hurt (the show goes on until The Vicious Vale is done)
     void Reset() override
     {
         _events.Reset();
         me->SetCombatMovement(false);
         me->SetReactState(REACT_PASSIVE);
-        _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 20s, 60s);
+        bool const kilag = me->GetEntry() == NPC_KILAG_GOREFANG;
+        me->SetEmoteState(kilag ? EMOTE_STATE_READY_RIFLE : EMOTE_STATE_READY1H);
+        if (kilag)
+            _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 2s, 4s);
+        else
+            _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 20s, 60s);
     }
 
     void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
@@ -1338,10 +1786,18 @@ struct npc_lost_isles_vale_orc : public ScriptedAI
 
         if (_events.ExecuteEvent() == EVENT_VALE_SHOW_FIGHT)
         {
+            bool const kilag = me->GetEntry() == NPC_KILAG_GOREFANG;
             if (Creature* target = SelectRandomCreatureInRange(me,
-                { NPC_POISON_SPITTER, NPC_FREEZYA, NPC_STRANGLE_VINE }, 25.0f))
-                DoCast(target, SPELL_ORC_SHOOT);
-            _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 20s, 60s);
+                { NPC_POISON_SPITTER, NPC_FREEZYA, NPC_STRANGLE_VINE }, kilag ? 30.0f : 25.0f))
+            {
+                me->SetFacingToObject(target);
+                DoCast(target, SPELL_ORC_SHOOT, true);
+            }
+            me->SetEmoteState(kilag ? EMOTE_STATE_READY_RIFLE : EMOTE_STATE_READY1H);
+            if (kilag)
+                _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 2500ms, 4s);
+            else
+                _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 20s, 60s);
         }
 
         if (!UpdateVictim())
@@ -1364,6 +1820,7 @@ struct npc_lost_isles_vale_plant : public ScriptedAI
     {
         _events.Reset();
         _playerCooldown = false;
+        _fighting = false;
         me->SetCombatMovement(false);
         me->SetReactState(REACT_PASSIVE);
         _events.ScheduleEvent(EVENT_VALE_SHOW_FIGHT, 20s, 120s);
@@ -1371,8 +1828,36 @@ struct npc_lost_isles_vale_plant : public ScriptedAI
 
     void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
     {
-        if (attacker && IsValeOrc(attacker->GetEntry()))
+        if (!attacker)
+            return;
+
+        if (IsValeOrc(attacker->GetEntry()))
+        {
             damage = 0;
+            return;
+        }
+
+        // A player's blow: it fights back, rooted, with its retail kit (ShatterCore's sniff of Weed Whacker)
+        Player* player = attacker->GetCharmerOrOwnerPlayerOrPlayerItself();
+        if (!player || _fighting)
+            return;
+
+        _fighting = true;
+        me->SetReactState(REACT_AGGRESSIVE);
+        AttackStart(player);
+        if (me->GetEntry() == NPC_FREEZYA)
+            _events.ScheduleEvent(EVENT_PLANT_FROSTBOLT, 1500ms, 3s);
+        else
+        {
+            _events.ScheduleEvent(EVENT_PLANT_THORNS, 2s, 3500ms);
+            _events.ScheduleEvent(EVENT_PLANT_POISON_SPIT, 5s, 9s);
+        }
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        DoCastSelf(SPELL_PLANT_BURST, true);
+        DoCastSelf(SPELL_PLANT_BURST_CONTROLLER, true);
     }
 
     void MoveInLineOfSight(Unit* who) override
@@ -1410,6 +1895,21 @@ struct npc_lost_isles_vale_plant : public ScriptedAI
                 case EVENT_VALE_PLAYER_COOLDOWN:
                     _playerCooldown = false;
                     break;
+                case EVENT_PLANT_THORNS:
+                    if (me->GetVictim())
+                        DoCastVictim(SPELL_SHOOT_THORNS);
+                    _events.ScheduleEvent(EVENT_PLANT_THORNS, 3s, 4500ms);
+                    break;
+                case EVENT_PLANT_POISON_SPIT:
+                    if (me->GetVictim())
+                        DoCastVictim(SPELL_POISON_SPIT);
+                    _events.ScheduleEvent(EVENT_PLANT_POISON_SPIT, 10s, 14s);
+                    break;
+                case EVENT_PLANT_FROSTBOLT:
+                    if (me->GetVictim())
+                        DoCastVictim(SPELL_FREEZYA_FROSTBOLT);
+                    _events.ScheduleEvent(EVENT_PLANT_FROSTBOLT, 2800ms, 4s);
+                    break;
                 default:
                     break;
             }
@@ -1431,6 +1931,7 @@ private:
 
     EventMap _events;
     bool _playerCooldown = false;
+    bool _fighting = false;
 };
 
 /*######
@@ -1515,6 +2016,13 @@ struct npc_lost_isles_orc_scout_leaving : public ScriptedAI
             _playerGUID = guid;
     }
 
+    // Weed Whacker's reward spell (68289) is the player's own cast: the player summons them
+    void IsSummonedBy(WorldObject* summoner) override
+    {
+        if (summoner && summoner->IsPlayer())
+            _playerGUID = summoner->GetGUID();
+    }
+
     void UpdateAI(uint32 diff) override
     {
         _events.Update(diff);
@@ -1534,8 +2042,140 @@ private:
 };
 
 /*######
-## 49108 Weed Whacker: using it again puts it away
+## 49108 Weed Whacker (14236): the quest's own spells, as the client defines them and ShatterCore wires them (Mr-Scooty,
+## sniff). The item casts Weed Whacker (68211), which puts the whacker on the player (68212: vehicle 493, the mowing
+## 68213 every half second, the speed 68824) and summons the Channel Bunny (68216), which rides the player (68217) and
+## beams the whacker (68214). When the whacker comes off, the bunny goes (68215). Using the item again puts it away.
 ######*/
+
+enum WeedWhacker
+{
+    SPELL_WEED_WHACKER_ITEM         = 68211,
+    SPELL_WEED_WHACKER_BEAM         = 68214,
+    SPELL_WEED_WHACKER_DESPAWN_BUNNY = 68215,
+    SPELL_WEED_WHACKER_SUMMON_BUNNY = 68216,
+    NPC_WEED_WHACKER_BUNNY          = 35903,
+};
+
+void DespawnWeedWhackerBunny(Unit* owner)
+{
+    std::list<Creature*> bunnies;
+    owner->GetCreatureListWithEntryInGrid(bunnies, NPC_WEED_WHACKER_BUNNY, 30.0f);
+    for (Creature* bunny : bunnies)
+        if (TempSummon* summon = bunny->ToTempSummon())
+            if (summon->GetSummonerGUID() == owner->GetGUID())
+                bunny->DespawnOrUnsummon();
+}
+
+// 68211 Weed Whacker: the whacker first (the bunny boards the player, who must be a vehicle by then), then the bunny
+class spell_lost_isles_weed_whacker : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_weed_whacker);
+
+    void HandleDummy(SpellEffIndex /*effIndex*/)
+    {
+        Unit* caster = GetCaster();
+        if (!caster || caster->HasAura(SPELL_WEED_WHACKER))
+            return;
+
+        caster->CastSpell(caster, SPELL_WEED_WHACKER, true);
+        caster->CastSpell(caster, SPELL_WEED_WHACKER_SUMMON_BUNNY, true);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_lost_isles_weed_whacker::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+    }
+};
+
+// 68212 Weed Whacker: the whacker off, the bunny and the speed go with it
+class spell_lost_isles_weed_whacker_aura : public AuraScript
+{
+    PrepareAuraScript(spell_lost_isles_weed_whacker_aura);
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        target->CastSpell(target, SPELL_WEED_WHACKER_DESPAWN_BUNNY, true);
+        target->RemoveAurasDueToSpell(SPELL_WEED_WHACKER_BUFF);
+        DespawnWeedWhackerBunny(target);
+    }
+
+    void Register() override
+    {
+        AfterEffectRemove += AuraEffectRemoveFn(spell_lost_isles_weed_whacker_aura::HandleRemove, EFFECT_0,
+            SPELL_AURA_SET_VEHICLE_ID, AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+// 68215 Weed Whacker: Despawn Weed Whacker Channel Bunny
+class spell_lost_isles_weed_whacker_despawn_bunny : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_weed_whacker_despawn_bunny);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        if (Unit* caster = GetCaster())
+            DespawnWeedWhackerBunny(caster);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_lost_isles_weed_whacker_despawn_bunny::HandleScript, EFFECT_0,
+            SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 35903 Weed Whacker Channel Bunny: rides the player and beams the whacker; gone with the whacker
+struct npc_lost_isles_weed_whacker_bunny : public ScriptedAI
+{
+    npc_lost_isles_weed_whacker_bunny(Creature* creature) : ScriptedAI(creature) { }
+
+    void IsSummonedBy(WorldObject* summoner) override
+    {
+        Unit* owner = summoner ? summoner->ToUnit() : nullptr;
+        if (!owner)
+            return;
+
+        _ownerGUID = owner->GetGUID();
+        me->SetReactState(REACT_PASSIVE);
+        _events.ScheduleEvent(2, 200ms);
+        _events.ScheduleEvent(1, 2s);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _events.Update(diff);
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            Unit* owner = ObjectAccessor::GetUnit(*me, _ownerGUID);
+            if (!owner || !owner->HasAura(SPELL_WEED_WHACKER))
+            {
+                me->DespawnOrUnsummon();
+                return;
+            }
+
+            if (eventId == 2)
+            {
+                // its ride (68217) targets the summoner as master, which a plain summon has not: it boards directly,
+                // once the whacker has made the player a vehicle, and beams from there
+                if (!me->GetVehicle() && owner->GetVehicleKit())
+                {
+                    me->EnterVehicle(owner, 0);
+                    DoCast(owner, SPELL_WEED_WHACKER_BEAM, true);
+                }
+                if (!me->GetVehicle())
+                    _events.ScheduleEvent(2, 300ms);
+            }
+            else
+                _events.ScheduleEvent(1, 2s);
+        }
+    }
+
+private:
+    EventMap _events;
+    ObjectGuid _ownerGUID;
+};
 
 class item_lost_isles_weed_whacker : public ItemScript
 {
@@ -1564,7 +2204,11 @@ enum InfraredInfradead
     SPELL_ORC_SCOUT_CONTROLLER      = 68338,
     SPELL_INFRARED_QUEST_ACCEPT     = 68344,
     SPELL_DESPAWN_ORC_SCOUT         = 68337,
+    SPELL_NEW_ORC_SCOUT_FROM_GOSSIP = 68346,
     SPELL_ORC_SCOUT_ON_DESPAWN      = 68371,
+    SPELL_SCOUT_CHARGE              = 100,
+    SPELL_SCOUT_REND                = 11977,
+    SPELL_ASSASSIN_SINISTER_STRIKE  = 14873,
     SPELL_TO_THE_CLIFFS_SUMMON_BASTIA = 68973,
 
     SAY_KILAG_USE_FOCALS            = 0,
@@ -1599,9 +2243,26 @@ public:
 ## 35917 Kilag Gorefang (the overlook): Infrared = Infradead (14238), To the Cliffs (14240)
 ######*/
 
+// The player's scout from the heat focals goes (handed in, abandoned, replaced)
+void DespawnInfraredScout(Player* player)
+{
+    std::list<Creature*> scouts;
+    player->GetCreatureListWithEntryInGrid(scouts, NPC_ORC_SCOUT_INFRARED, 200.0f);
+    for (Creature* scout : scouts)
+        if (scout->GetOwnerGUID() == player->GetGUID()
+            || (scout->ToTempSummon() && scout->ToTempSummon()->GetSummonerGUID() == player->GetGUID()))
+            scout->DespawnOrUnsummon();
+}
+
 struct npc_lost_isles_kilag_gorefang_overlook : public ScriptedAI
 {
     npc_lost_isles_kilag_gorefang_overlook(Creature* creature) : ScriptedAI(creature) { }
+
+    // "Kilag, I... lost my scout" (New Orc Scout from Gossip), "I need to borrow your tamed jungle cat" (Bastia)
+    void sGossipSelect(Player* player, uint32 sender, uint32 action) override
+    {
+        HandleLostIslesGossipSpell(player, sender, action);
+    }
 
     void sGossipHello(Player* player) override
     {
@@ -1636,9 +2297,105 @@ struct npc_lost_isles_kilag_gorefang_overlook : public ScriptedAI
             return;
 
         player->CastSpell(player, SPELL_DESPAWN_ORC_SCOUT, false);
-        player->CastSpell(player, SPELL_ORC_SCOUT_ON_DESPAWN, false);
         player->RemoveAurasDueToSpell(SPELL_ORC_SCOUT_CONTROLLER);
+        DespawnInfraredScout(player);
     }
+};
+
+// 68337 Infrared = Infradead: Despawn Orc Scout (from the quest's reward spell): the player's own scout goes
+class spell_lost_isles_despawn_orc_scout : public SpellScript
+{
+    PrepareSpellScript(spell_lost_isles_despawn_orc_scout);
+
+    void HandleScript(SpellEffIndex /*effIndex*/)
+    {
+        if (Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr)
+            DespawnInfraredScout(player);
+    }
+
+    void Register() override
+    {
+        OnEffectHit += SpellEffectFn(spell_lost_isles_despawn_orc_scout::HandleScript, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
+// 68346 Infrared = Infradead: New Orc Scout from Gossip: the lost scout goes, a new one comes (the controller again)
+class spell_lost_isles_new_orc_scout : public AuraScript
+{
+    PrepareAuraScript(spell_lost_isles_new_orc_scout);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Player* player = GetTarget()->ToPlayer();
+        if (!player)
+            return;
+
+        DespawnInfraredScout(player);
+        player->RemoveAurasDueToSpell(SPELL_ORC_SCOUT_CONTROLLER);
+        if (player->GetQuestStatus(QUEST_INFRARED_INFRADEAD) == QUEST_STATUS_INCOMPLETE)
+            player->CastSpell(player, SPELL_ORC_SCOUT_CONTROLLER, true);
+        Remove();
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_lost_isles_new_orc_scout::HandleApply, EFFECT_0, SPELL_AURA_DUMMY,
+            AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+class player_lost_isles_infrared : public PlayerScript
+{
+public:
+    player_lost_isles_infrared() : PlayerScript("player_lost_isles_infrared", { PLAYERHOOK_ON_QUEST_ABANDON }) { }
+
+    void OnPlayerQuestAbandon(Player* player, uint32 questId) override
+    {
+        if (questId != QUEST_INFRARED_INFRADEAD)
+            return;
+
+        player->RemoveAurasDueToSpell(SPELL_ORC_SCOUT_CONTROLLER);
+        player->RemoveAurasDueToSpell(SPELL_INFRARED_HEAT_FOCALS);
+        player->RemoveAurasDueToSpell(SPELL_INFRARED_HEAT_FOCALS_2);
+        DespawnInfraredScout(player);
+    }
+};
+
+/*######
+## 36092 SI:7 Assassin: the hidden assassins of Infrared = Infradead fight with Sinister Strike (ShatterCore's sniff)
+######*/
+
+struct npc_lost_isles_si7_assassin : public ScriptedAI
+{
+    npc_lost_isles_si7_assassin(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _events.Reset();
+    }
+
+    void JustEngagedWith(Unit* /*who*/) override
+    {
+        _events.ScheduleEvent(1, 3s, 5s);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (!UpdateVictim())
+            return;
+
+        _events.Update(diff);
+        if (_events.ExecuteEvent())
+        {
+            DoCastVictim(SPELL_ASSASSIN_SINISTER_STRIKE);
+            _events.ScheduleEvent(1, 5s, 8s);
+        }
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    EventMap _events;
 };
 
 /*######
@@ -1648,6 +2405,7 @@ struct npc_lost_isles_kilag_gorefang_overlook : public ScriptedAI
 enum OrcScoutInfrared
 {
     EVENT_INFRARED_SCOUT_TALK       = 1,
+    EVENT_INFRARED_SCOUT_REND,
     SAY_INFRARED_SCOUT_GOGGLES      = 0,
 };
 
@@ -1664,13 +2422,45 @@ struct npc_lost_isles_orc_scout_infrared : public ScriptedAI
         _events.ScheduleEvent(EVENT_INFRARED_SCOUT_TALK, 1s);
     }
 
+    void JustEngagedWith(Unit* who) override
+    {
+        DoCast(who, SPELL_SCOUT_CHARGE);
+        _events.ScheduleEvent(EVENT_INFRARED_SCOUT_REND, 4s, 6s);
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        DoCastSelf(SPELL_ORC_SCOUT_ON_DESPAWN, true);
+    }
+
     void UpdateAI(uint32 diff) override
     {
         _events.Update(diff);
 
-        if (_events.ExecuteEvent() == EVENT_INFRARED_SCOUT_TALK)
+        while (uint32 eventId = _events.ExecuteEvent())
+        {
+            switch (eventId)
+            {
+                case EVENT_INFRARED_SCOUT_TALK:
+                    if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+                        Talk(SAY_INFRARED_SCOUT_GOGGLES, player);
+                    break;
+                case EVENT_INFRARED_SCOUT_REND:
+                    if (me->GetVictim())
+                        DoCastVictim(SPELL_SCOUT_REND);
+                    _events.ScheduleEvent(EVENT_INFRARED_SCOUT_REND, 12s, 16s);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        // the player's fight is the scout's
+        if (!me->GetVictim())
             if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
-                Talk(SAY_INFRARED_SCOUT_GOGGLES, player);
+                if (Unit* enemy = player->GetVictim())
+                    if (me->IsValidAttackTarget(enemy))
+                        AttackStart(enemy);
 
         if (!UpdateVictim())
             return;
@@ -1720,7 +2510,18 @@ enum Bastia
     POINT_BASTIA_BRAX               = 1,
 };
 
-Position const BastiaDestination = { 1076.0f, 3238.5f, 80.5f, 0.0f }; // beside Scout Brax (36112)
+// The trail from the overlook up the cliffs to Scout Brax (36112): ArkCORE-NG's route for her (its path 3658500, run),
+// which keeps to the path where path finding cut across the rocks
+std::array<Position, 28> const BastiaTrail =
+{ {
+    { 868.2f, 2844.5f, 102.8f }, { 868.8f, 2865.4f, 101.1f }, { 874.0f, 2871.5f, 100.7f }, { 903.2f, 2877.1f, 100.2f },
+    { 915.7f, 2889.1f, 100.0f }, { 924.3f, 2907.2f, 101.9f }, { 940.6f, 2916.7f, 105.1f }, { 947.8f, 2940.4f, 109.0f },
+    { 956.5f, 2946.7f, 109.8f }, { 1035.3f, 2949.7f, 110.2f }, { 1044.2f, 2959.5f, 111.3f }, { 1049.5f, 2977.7f, 112.6f },
+    { 1075.6f, 2999.2f, 117.4f }, { 1075.4f, 3025.4f, 121.8f }, { 1089.0f, 3040.2f, 123.1f }, { 1087.6f, 3063.5f, 123.8f },
+    { 1070.1f, 3100.8f, 125.2f }, { 1048.2f, 3118.5f, 125.3f }, { 1031.4f, 3124.1f, 124.9f }, { 1025.0f, 3130.9f, 124.7f },
+    { 1023.3f, 3149.5f, 122.9f }, { 1024.1f, 3166.8f, 119.8f }, { 1045.2f, 3182.3f, 116.7f }, { 1055.8f, 3197.6f, 113.2f },
+    { 1058.0f, 3207.8f, 108.4f }, { 1060.1f, 3226.0f, 96.4f }, { 1075.5f, 3234.8f, 84.4f }, { 1081.0f, 3238.7f, 82.2f },
+} };
 
 struct npc_lost_isles_bastia : public VehicleAI
 {
@@ -1739,14 +2540,8 @@ struct npc_lost_isles_bastia : public VehicleAI
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        if (type != POINT_MOTION_TYPE || id != POINT_BASTIA_BRAX)
+        if (!IsRideEnd(type) || id != POINT_BASTIA_BRAX)
             return;
-
-        if (me->GetDistance(BastiaDestination) > 10.0f)
-        {
-            MoveRide(me, POINT_BASTIA_BRAX, BastiaDestination, false);
-            return;
-        }
 
         if (Vehicle* vehicle = me->GetVehicleKit())
             vehicle->RemoveAllPassengers();
@@ -1761,7 +2556,7 @@ struct npc_lost_isles_bastia : public VehicleAI
         if (_events.ExecuteEvent() == EVENT_BASTIA_START)
         {
             me->SetWalk(false);
-            MoveRide(me, POINT_BASTIA_BRAX, BastiaDestination, false);
+            me->GetMotionMaster()->MoveSmoothPath(POINT_BASTIA_BRAX, BastiaTrail.data(), BastiaTrail.size(), false);
         }
     }
 
@@ -1813,7 +2608,17 @@ struct npc_lost_isles_gyrochoppa_quest : public ScriptedAI
 ## 36143 Gyrochoppa: the flight to the ship that holds Thrall
 ######*/
 
-Position const GyrochoppaDestination = { 993.0f, 3848.0f, 12.0f, 0.0f }; // over Thrall's cage (36145)
+// The flight from the sniff, as ShatterCore has it (Mr-Scooty): out over the bay and down to the water by Thrall's ship,
+// where "Find the Precious Cargo!" and the player drops in; the rope ladders lead aboard
+std::array<Position, 6> const GyrochoppaPath =
+{ {
+    { 846.74f, 3335.54f, 10.14f },
+    { 755.89f, 3374.22f, 14.39f },
+    { 780.33f, 3449.16f, 14.39f },
+    { 1071.62f, 3589.42f, 26.22f },
+    { 1098.78f, 3729.42f, 93.03f },
+    { 971.51f, 3802.34f, 14.36f },
+} };
 
 struct npc_lost_isles_gyrochoppa : public VehicleAI
 {
@@ -1826,9 +2631,12 @@ struct npc_lost_isles_gyrochoppa : public VehicleAI
             return;
 
         if (apply)
-            _events.ScheduleEvent(EVENT_GYROCHOPPA_START, 3s);
+            _events.ScheduleEvent(EVENT_GYROCHOPPA_START, 2s);
         else
-            Talk(SAY_GYROCHOPPA_FIND_CARGO, player);
+        {
+            _events.Reset();
+            me->DespawnOrUnsummon(2s);
+        }
     }
 
     void MovementInform(uint32 type, uint32 id) override
@@ -1836,9 +2644,12 @@ struct npc_lost_isles_gyrochoppa : public VehicleAI
         if (!IsRideEnd(type) || id != POINT_GYROCHOPPA_CARGO)
             return;
 
+        if (Vehicle* vehicle = me->GetVehicleKit())
+            if (Unit* passenger = vehicle->GetPassenger(0))
+                if (Player* player = passenger->ToPlayer())
+                    Talk(SAY_GYROCHOPPA_FIND_CARGO, player);
         DoCastSelf(SPELL_EJECT_ALL_PASSENGERS, true);
-        DoCastSelf(SPELL_UP_UP_KILL_CREDIT, true);
-        me->DespawnOrUnsummon(100ms);
+        me->DespawnOrUnsummon(1s);
     }
 
     void UpdateAI(uint32 diff) override
@@ -1849,11 +2660,11 @@ struct npc_lost_isles_gyrochoppa : public VehicleAI
         if (_events.ExecuteEvent() == EVENT_GYROCHOPPA_START)
         {
             me->SetImmuneToAll(true);
-            me->SetSpeed(MOVE_RUN, 2.5f);
-            me->SetSpeed(MOVE_FLIGHT, 2.5f);
+            me->SetSpeed(MOVE_FLIGHT, 6.43f); // the sniff: 45 yards a second
             me->SetCanFly(true);
             me->SetDisableGravity(true);
-            MoveRide(me, POINT_GYROCHOPPA_CARGO, GyrochoppaDestination, true);
+            me->GetMotionMaster()->MoveSmoothPath(POINT_GYROCHOPPA_CARGO, GyrochoppaPath.data(), GyrochoppaPath.size(),
+                false, true);
         }
     }
 
@@ -1986,15 +2797,27 @@ enum ThrallUpTop
     EVENT_THRALL_CALL_2,
     EVENT_THRALL_CALL_COOLDOWN,
 
+    EVENT_THRALL_STORM,
+
     SPELL_WARCHIEFS_REVENGE_ACCEPT  = 68408, // summons the cyclone 36178
+    SPELL_THRALL_CHAIN_LIGHTNING    = 68440,
 
     SAY_THRALL_SPIRITS_OF_THE_SEA   = 0,
     SAY_THRALL_CHILDREN_OF_THE_DEPTHS = 1,
+    SAY_THRALL_STORM_FIRST          = 2,
+    SAY_THRALL_STORM_LAST           = 6,
 };
 
 struct npc_lost_isles_thrall_up_top : public ScriptedAI
 {
     npc_lost_isles_thrall_up_top(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _events.Reset();
+        _callCooldown = false;
+        _events.ScheduleEvent(EVENT_THRALL_STORM, 5s);
+    }
 
     void sQuestAccept(Player* player, Quest const* quest) override
     {
@@ -2040,6 +2863,25 @@ struct npc_lost_isles_thrall_up_top : public ScriptedAI
                 case EVENT_THRALL_CALL_COOLDOWN:
                     _callCooldown = false;
                     break;
+                case EVENT_THRALL_STORM:
+                {
+                    // While someone rides the cyclone, he strikes the sailors (harmless: they are the player's to kill)
+                    Player* rider = nullptr;
+                    for (auto const& ref : me->GetMap()->GetPlayers())
+                        if (Player* player = ref.GetSource())
+                            if (player->IsWithinDistInMap(me, 150.0f) && player->InSamePhase(me)
+                                && player->GetQuestStatus(QUEST_WARCHIEFS_REVENGE) == QUEST_STATUS_INCOMPLETE)
+                                rider = player;
+                    if (rider)
+                    {
+                        if (Creature* sailor = me->FindNearestCreature(NPC_ALLIANCE_SAILOR, 60.0f))
+                            DoCast(sailor, SPELL_THRALL_CHAIN_LIGHTNING, true);
+                        if (roll_chance_i(35))
+                            Talk(urand(SAY_THRALL_STORM_FIRST, SAY_THRALL_STORM_LAST), rider);
+                    }
+                    _events.ScheduleEvent(EVENT_THRALL_STORM, 6s, 10s);
+                    break;
+                }
                 default:
                     break;
             }
@@ -2106,6 +2948,12 @@ struct npc_lost_isles_alliance_sailor : public ScriptedAI
 {
     npc_lost_isles_alliance_sailor(Creature* creature) : ScriptedAI(creature) { }
 
+    void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
+    {
+        if (attacker && attacker->GetEntry() == NPC_THRALL_UP_TOP)
+            damage = 0;
+    }
+
     void Reset() override
     {
         _events.Reset();
@@ -2140,12 +2988,38 @@ enum CycloneOfTheElements
     EVENT_CYCLONE_CHECK_QUEST,
 
     SPELL_CYCLONE_RIDE              = 68436,
+    SPELL_TO_THE_WILD_OVERLOOK      = 68409,
+    SPELL_WARCHIEFS_REVENGE_ABANDON = 68438,
+    SPELL_WARCHIEFS_REVENGE_GOAL    = 68439,
     POINT_CYCLONE_CAMP              = 1,
+    POINT_CYCLONE_LIFTOFF,
+    POINT_CYCLONE_CIRCUIT,
     ALLIANCE_SAILORS_TO_KILL        = 50,
 };
 
-Position const AllianceFleetCenter = { 1001.0f, 3834.0f, 30.0f, 0.0f };     // the middle of the sailors' spawns
-Position const CycloneDestination = { 872.7f, 2761.4f, 125.0f, 0.0f };     // over Thrall's camp (36188)
+// The ride from the sniff, as ShatterCore has it (Mr-Scooty): off the Vengeance Wake, round and round a circuit over both
+// ships while the player strikes the sailors, then, the fiftieth fallen, to the Wild Overlook by Thrall's camp
+std::array<Position, 3> const CycloneLiftOff =
+{ {
+    { 984.95f, 3826.14f, 10.03f }, { 995.30f, 3830.47f, 11.08f }, { 1005.22f, 3832.42f, 14.53f },
+} };
+std::array<Position, 22> const CycloneCircuit =
+{ {
+    { 1042.18f, 3857.24f, 23.60f }, { 1071.38f, 3852.88f, 21.19f }, { 1097.26f, 3826.48f, 18.91f },
+    { 1097.90f, 3780.77f, 20.30f }, { 1062.80f, 3755.34f, 22.85f }, { 1033.11f, 3773.80f, 23.60f },
+    { 1021.79f, 3827.31f, 20.99f }, { 1004.84f, 3861.21f, 19.96f }, { 962.51f, 3859.35f, 20.30f },
+    { 937.91f, 3841.93f, 19.27f }, { 903.89f, 3827.22f, 19.57f }, { 867.18f, 3849.85f, 21.32f },
+    { 866.32f, 3895.80f, 21.52f }, { 893.65f, 3935.71f, 20.88f }, { 936.51f, 3944.06f, 21.13f },
+    { 968.71f, 3914.84f, 20.38f }, { 952.70f, 3861.26f, 24.55f }, { 936.18f, 3820.98f, 21.94f },
+    { 943.95f, 3785.92f, 22.27f }, { 975.88f, 3771.54f, 20.71f }, { 1004.32f, 3782.39f, 21.71f },
+    { 1022.35f, 3831.35f, 24.63f },
+} };
+std::array<Position, 9> const CycloneDeparture =
+{ {
+    { 956.42f, 3740.38f, 70.96f }, { 950.88f, 3662.27f, 14.80f }, { 915.74f, 3451.17f, 2.30f },
+    { 907.14f, 3327.42f, 23.49f }, { 960.32f, 3212.72f, 111.31f }, { 995.90f, 3143.98f, 145.03f },
+    { 1007.96f, 3070.12f, 147.64f }, { 901.75f, 2926.98f, 147.64f }, { 872.49f, 2765.59f, 119.89f },
+} };
 
 struct npc_lost_isles_cyclone_of_the_elements : public VehicleAI
 {
@@ -2183,12 +3057,28 @@ struct npc_lost_isles_cyclone_of_the_elements : public VehicleAI
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        if (!IsRideEnd(type) || id != POINT_CYCLONE_CAMP)
+        if (!IsRideEnd(type))
             return;
 
-        if (Vehicle* vehicle = me->GetVehicleKit())
-            vehicle->RemoveAllPassengers();
-        me->DespawnOrUnsummon(1s);
+        switch (id)
+        {
+            case POINT_CYCLONE_LIFTOFF:
+            case POINT_CYCLONE_CIRCUIT:
+                // round the circuit until the goal is reached
+                if (!_departing)
+                    me->GetMotionMaster()->MoveSmoothPath(POINT_CYCLONE_CIRCUIT, CycloneCircuit.data(),
+                        CycloneCircuit.size(), false, true);
+                break;
+            case POINT_CYCLONE_CAMP:
+                if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+                    player->RemoveAurasDueToSpell(SPELL_TO_THE_WILD_OVERLOOK);
+                if (Vehicle* vehicle = me->GetVehicleKit())
+                    vehicle->RemoveAllPassengers();
+                me->DespawnOrUnsummon(1s);
+                break;
+            default:
+                break;
+        }
     }
 
     void UpdateAI(uint32 diff) override
@@ -2200,9 +3090,10 @@ struct npc_lost_isles_cyclone_of_the_elements : public VehicleAI
         {
             switch (eventId)
             {
-                case EVENT_CYCLONE_START:
-                    me->GetMotionMaster()->MoveCirclePath(AllianceFleetCenter.GetPositionX(),
-                        AllianceFleetCenter.GetPositionY(), AllianceFleetCenter.GetPositionZ(), 70.0f, true, 16);
+            case EVENT_CYCLONE_START:
+                    me->SetSpeed(MOVE_FLIGHT, 1.63f); // the sniff: 11.4 yards a second round the ships
+                    me->GetMotionMaster()->MoveSmoothPath(POINT_CYCLONE_LIFTOFF, CycloneLiftOff.data(),
+                        CycloneLiftOff.size(), false, true);
                     _events.ScheduleEvent(EVENT_CYCLONE_CHECK_QUEST, 1s);
                     break;
                 case EVENT_CYCLONE_CHECK_QUEST:
@@ -2216,10 +3107,20 @@ struct npc_lost_isles_cyclone_of_the_elements : public VehicleAI
                         _events.ScheduleEvent(EVENT_CYCLONE_CHECK_QUEST, 1s);
                         break;
                     }
+                    // the goal reached (or the quest given up): to the Wild Overlook
+                    _departing = true;
+                    if (player)
+                    {
+                        if (player->GetQuestStatus(QUEST_WARCHIEFS_REVENGE) == QUEST_STATUS_COMPLETE)
+                            player->CastSpell(me, SPELL_WARCHIEFS_REVENGE_GOAL, true);
+                        else
+                            player->CastSpell(me, SPELL_WARCHIEFS_REVENGE_ABANDON, true);
+                        player->CastSpell(player, SPELL_TO_THE_WILD_OVERLOOK, true);
+                    }
                     me->GetMotionMaster()->Clear();
-                    me->SetSpeed(MOVE_FLIGHT, 3.5f);
-                    me->SetSpeed(MOVE_RUN, 3.5f);
-                    MoveRide(me, POINT_CYCLONE_CAMP, CycloneDestination, true);
+                    me->SetSpeed(MOVE_FLIGHT, 4.65f); // the sniff: 32.6 yards a second
+                    me->GetMotionMaster()->MoveSmoothPath(POINT_CYCLONE_CAMP, CycloneDeparture.data(),
+                        CycloneDeparture.size(), false, true);
                     break;
                 }
                 default:
@@ -2231,6 +3132,7 @@ struct npc_lost_isles_cyclone_of_the_elements : public VehicleAI
 private:
     EventMap _events;
     ObjectGuid _playerGUID;
+    bool _departing = false;
 };
 
 /*######
@@ -5523,9 +6425,11 @@ struct LostIslesGossipSpell
     uint32 spell;
 };
 
-std::array<LostIslesGossipSpell, 5> const LostIslesGossipSpells =
+std::array<LostIslesGossipSpell, 7> const LostIslesGossipSpells =
 {{
-    { 10823, 0, 14021, 68062 }, // Dampwick: "Er, Dampwick, I need another miner...." (Frightened Miner Controller)
+    { 10823, 0, 14021, 68069 }, // Dampwick: "Er, Dampwick, I need another miner...." (New Miner from Gossip)
+    { 10708, 0, 14238, 68346 }, // Kilag: "Kilag, I... uh, somehow... er, lost my scout." (New Orc Scout from Gossip)
+    { 10708, 1, 14240, 68973 }, // Kilag: "I need to borrow your tamed jungle cat..." (To the Cliffs: Bastia)
     { 10965, 0, 24671, 74172 }, // Hobart: "I seem to have misplaced the remote control fireworks."
     { 10965, 1, 25214, 73967 }, // Hobart: "Hobart, I need more single-stage booster rockets!"
     { 11074, 0, 24942, 72948 }, // Coach Crosscheck: "Coach, can I get some rocket boots?"
@@ -5549,7 +6453,7 @@ bool HandleLostIslesGossipSpell(Player* player, uint32 menu, uint32 option)
 
 /*######
 ## 36719 Pterrordax Scavenger: circles in the sky over its spot like a vulture. TDB 434 only lets the flying ones drift
-## 5-10 yards about their spot, which in the air looks like hovering; the ones TDB has standing stay perched. Each
+## 5-10 yards about their spot, which in the air looks like hovering; all of them circle (the user, 2026-11-10). Each
 ## circles on its own radius and in its own direction (from its spawn), so a flock does not wheel in step.
 ######*/
 
@@ -5559,26 +6463,41 @@ struct npc_lost_isles_pterrordax_scavenger : public ScriptedAI
 
     void Reset() override
     {
-        Circle();
+        _circling = false;
     }
 
     void JustReachedHome() override
     {
-        Circle();
+        _circling = false;
+    }
+
+    void UpdateAI(uint32 /*diff*/) override
+    {
+        if (!UpdateVictim())
+        {
+            // Started here, not in Reset: the creature's default movement is set up around Reset and replaced it
+            if (!_circling && !me->IsInEvadeMode())
+                Circle();
+            return;
+        }
+
+        _circling = false;
+        DoMeleeAttackIfReady();
     }
 
 private:
+    bool _circling = false;
+
     void Circle()
     {
-        if (me->GetDefaultMovementType() == IDLE_MOTION_TYPE || me->IsInCombat())
-            return;
-
+        _circling = true;
         uint32 const seed = me->GetSpawnId();
         float const radius = 15.0f + float(seed % 21);
         Position const& home = me->GetHomePosition();
         me->GetMotionMaster()->Clear();
+        // every one soars over its spot, whatever its spawn's movement; flown even if the spawn lacks the fly flag
         me->GetMotionMaster()->MoveCirclePath(home.GetPositionX(), home.GetPositionY(), home.GetPositionZ(), radius,
-            seed % 2 == 0, 16);
+            seed % 2 == 0, 16, FORCED_MOVEMENT_FLY);
     }
 };
 
@@ -6331,12 +7250,32 @@ void AddSC_zone_lost_isles()
     RegisterCreatureAI(npc_lost_isles_bomb_throwing_monkey);
     RegisterCreatureAI(npc_lost_isles_foreman_dampwick_mine);
     RegisterCreatureAI(npc_lost_isles_frightened_miner);
+    new player_lost_isles_miner_troubles();
+    RegisterSpellScript(spell_lost_isles_miner_quest_accept);
+    RegisterSpellScript(spell_lost_isles_frightened_miner_controller);
+    RegisterSpellScript(spell_lost_isles_despawn_frightened_miner);
+    RegisterSpellScript(spell_lost_isles_new_miner_from_gossip);
+    RegisterCreatureAI(npc_lost_isles_kajamite_chunk);
+    RegisterSpellScript(spell_lost_isles_chunk_ride_ore_cart);
     RegisterCreatureAI(npc_lost_isles_capturing_bunny);
+    RegisterSpellScript(spell_lost_isles_ktc_snapflash);
+    RegisterSpellScript(spell_lost_isles_capturing_aicast);
+    RegisterSpellScript(spell_lost_isles_capturing_sight);
+    RegisterSpellScript(spell_lost_isles_capturing_remove_sight);
+    new player_lost_isles_capturing_the_unknown();
     RegisterCreatureAI(npc_lost_isles_pygmy_witchdoctor);
     RegisterCreatureAI(npc_lost_isles_vale_orc);
     RegisterCreatureAI(npc_lost_isles_vale_plant);
     RegisterCreatureAI(npc_lost_isles_strangle_vine);
     RegisterCreatureAI(npc_lost_isles_orc_scout_leaving);
+    RegisterSpellScript(spell_lost_isles_weed_whacker);
+    RegisterSpellScript(spell_lost_isles_weed_whacker_aura);
+    RegisterSpellScript(spell_lost_isles_weed_whacker_despawn_bunny);
+    RegisterCreatureAI(npc_lost_isles_weed_whacker_bunny);
+    RegisterSpellScript(spell_lost_isles_despawn_orc_scout);
+    RegisterSpellScript(spell_lost_isles_new_orc_scout);
+    new player_lost_isles_infrared();
+    RegisterCreatureAI(npc_lost_isles_si7_assassin);
     new item_lost_isles_weed_whacker();
     new item_lost_isles_infrared_heat_focals();
     RegisterCreatureAI(npc_lost_isles_kilag_gorefang_overlook);
