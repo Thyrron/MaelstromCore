@@ -19,7 +19,9 @@
 #include "Config.h"
 #include "GameTime.h"
 #include "IpAddress.h"
+#include "Realm.h"
 #include "Timer.h"
+#include "World.h"
 #include "WorldPacket.h"
 
 #pragma pack(push, 1)
@@ -97,7 +99,9 @@ void PacketLog::Initialize()
         header.Signature[0] = 'P'; header.Signature[1] = 'K'; header.Signature[2] = 'T';
         header.FormatVersion = 0x0301;
         header.SnifferId = 'T';
-        header.Build = 12340;
+        // the client build the realm serves (realmlist.gamebuild, loaded before the network starts), so packet
+        // parsers decode the log as that build; 4.3.4 if it is not set
+        header.Build = realm.Build ? realm.Build : 15595;
         header.Locale[0] = 'e'; header.Locale[1] = 'n'; header.Locale[2] = 'U'; header.Locale[3] = 'S';
         std::memset(header.SessionKey, 0, sizeof(header.SessionKey));
         header.SniffStartUnixtime = GameTime::GetGameTime().count();
